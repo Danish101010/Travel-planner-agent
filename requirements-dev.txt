@@ -1,0 +1,28 @@
+# Production dependencies
+google-generativeai
+tavily-python
+pydantic
+flask
+flask-cors
+
+# Server & Deployment
+gunicorn
+python-dotenv
+
+# Development dependencies (optional)
+pytest
+pytest-cov
+black
+flake8
+pylint
+mypy
+
+# Performance & Monitoring
+redis
+python-redis
+
+# Security
+cryptography
+
+# Utilities
+click

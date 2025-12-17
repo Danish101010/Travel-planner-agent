@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>✈️ Smart Travel Planner</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">✈️ Smart Travel Planner</div>
+            <div class="nav-tagline">Plan Your Perfect Adventure</div>
+        </div>
+    </nav>
+
+    <div class="hero">
+        <div class="hero-content">
+            <h1>Plan Your Perfect Trip</h1>
+            <p>Get personalized day-by-day itineraries tailored to your style and budget</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="main-content">
+            <!-- Input Form -->
+            <div class="form-section">
+                <h2>Trip Details</h2>
+                <form id="plannerForm">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="destination">🌍 Destination</label>
+                            <input type="text" id="destination" name="destination" value="Tokyo" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="days">📅 Number of Days</label>
+                            <input type="number" id="days" name="days" min="1" max="30" value="5" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="budget">💰 Total Budget ($)</label>
+                            <input type="number" id="budget" name="budget" min="500" max="20000" value="3000" required>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="style">🎯 Travel Style</label>
+                            <select id="style" name="style" required>
+                                <option value="Budget">Budget</option>
+                                <option value="Mid-Range" selected>Mid-Range</option>
+                                <option value="Luxury">Luxury</option>
+                                <option value="Adventure">Adventure</option>
+                                <option value="Cultural">Cultural</option>
+                                <option value="Relaxation">Relaxation</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="group">👥 Traveling With</label>
+                            <select id="group" name="group" required>
+                                <option value="Solo" selected>Solo</option>
+                                <option value="Couple">Couple</option>
+                                <option value="Family">Family</option>
+                                <option value="Friends Group">Friends Group</option>
+                                <option value="Corporate">Corporate</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label>❤️ Your Interests</label>
+                        <div class="checkbox-grid">
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="History & Culture"> History & Culture
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Food & Dining" checked> Food & Dining
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Adventure Sports"> Adventure Sports
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Nature"> Nature
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Nightlife"> Nightlife
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Shopping"> Shopping
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Beach"> Beach
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Mountains"> Mountains
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Art & Museums" checked> Art & Museums
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="interests" value="Photography"> Photography
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label for="special_needs">♿ Special Needs (optional)</label>
+                        <textarea id="special_needs" name="special_needs" placeholder="e.g., wheelchair accessible, vegetarian only, kid-friendly, etc." rows="3"></textarea>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-large">
+                        🚀 Generate My Itinerary
+                    </button>
+                </form>
+            </div>
+
+            <!-- Results Section -->
+            <div id="resultsSection" class="results-section hidden">
+                <!-- Tabs -->
+                <div class="tabs">
+                    <button class="tab-button active" data-tab="itinerary">📋 Daily Itinerary</button>
+                    <button class="tab-button" data-tab="budget">💳 Budget Breakdown</button>
+                    <button class="tab-button" data-tab="recommendations">💡 Tips & Recommendations</button>
+                    <button class="tab-button" data-tab="overview">🗺️ Trip Overview</button>
+                </div>
+
+                <!-- Tab Contents -->
+                <div class="tabs-content">
+                    <!-- Itinerary Tab -->
+                    <div class="tab-content active" id="itinerary-tab">
+                        <h2 id="itineraryTitle"></h2>
+                        <div id="itineraryContent"></div>
+                    </div>
+
+                    <!-- Budget Tab -->
+                    <div class="tab-content" id="budget-tab">
+                        <h2>💳 Budget Breakdown</h2>
+                        <div class="budget-metrics">
+                            <div id="budgetContent"></div>
+                        </div>
+                    </div>
+
+                    <!-- Recommendations Tab -->
+                    <div class="tab-content" id="recommendations-tab">
+                        <h2>💡 Pro Tips & Recommendations</h2>
+                        <div id="recommendationsContent"></div>
+                    </div>
+
+                    <!-- Overview Tab -->
+                    <div class="tab-content" id="overview-tab">
+                        <h2>📊 Trip Overview</h2>
+                        <div id="overviewContent"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div id="loadingSpinner" class="spinner hidden">
+                <div class="spinner-border"></div>
+                <p>Planning your perfect trip...</p>
+            </div>
+
+            <!-- Error Message -->
+            <div id="errorMessage" class="error-message hidden"></div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>&copy; 2024 Smart Travel Planner. Plan your adventures with AI.</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
