@@ -4,6 +4,11 @@ const API_URL = '/api';
 // State for autocomplete results and selected destination
 let destinationCoords = { lat: 0, lon: 0, country: '' };
 let sourceCoords = { lat: 0, lon: 0, country: '' };
+let mapInstance = null;
+let markerLayer = null;
+let routeLayer = null;
+let poiMarkerMap = {};
+let routeErrorMessage = '';
 
 // DOM Elements
 const form = document.getElementById('plannerForm');
@@ -13,6 +18,10 @@ const errorMessage = document.getElementById('errorMessage');
 const tabButtons = document.querySelectorAll('.tab-button');
 const destinationInput = document.getElementById('destination');
 const sourceInput = document.getElementById('source');
+const mapLayout = document.getElementById('mapLayout');
+const mapEmptyState = document.getElementById('mapEmptyState');
+const poiListEl = document.getElementById('poiList');
+const routeSummaryEl = document.getElementById('routeSummary');
 
 // Event Listeners
 form.addEventListener('submit', handleFormSubmit);
@@ -234,7 +243,54 @@ async function handleFormSubmit(e) {
         const data = await response.json();
 
         if (data.success) {
-            displayResults(data.itinerary, data.budget, source, destination, days, budget, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate);
+            const resolvedDestinationCoords = await ensureCoords(destination, destinationCoords);
+            const resolvedSourceCoords = await ensureCoords(source, sourceCoords);
+
+            destinationCoords = resolvedDestinationCoords;
+            sourceCoords = resolvedSourceCoords;
+
+            routeErrorMessage = '';
+
+            const poiPromise = resolvedDestinationCoords.lat && resolvedDestinationCoords.lon
+                ? fetchPOIData(resolvedDestinationCoords, interests)
+                : Promise.resolve([]);
+
+            let routePromise;
+            if (resolvedDestinationCoords.lat && resolvedDestinationCoords.lon && resolvedSourceCoords.lat && resolvedSourceCoords.lon) {
+                routePromise = fetchRouteData(resolvedSourceCoords, resolvedDestinationCoords).catch(err => {
+                    routeErrorMessage = err.message || 'Route unavailable';
+                    return null;
+                });
+            } else {
+                routePromise = Promise.resolve(null);
+            }
+
+            const [poiData, routeData] = await Promise.all([
+                poiPromise.catch(() => []),
+                routePromise
+            ]);
+
+            displayResults(
+                data.itinerary,
+                data.budget,
+                source,
+                destination,
+                days,
+                budget,
+                style,
+                group,
+                interests,
+                weatherData,
+                timezoneData,
+                countryInfo,
+                travelAdvisory,
+                exchangeRate,
+                poiData,
+                routeData,
+                resolvedSourceCoords,
+                resolvedDestinationCoords
+            );
+
             resultsSection.classList.remove('hidden');
             resultsSection.scrollIntoView({ behavior: 'smooth' });
         } else {
@@ -249,7 +305,7 @@ async function handleFormSubmit(e) {
 }
 
 // Display Results
-function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate) {
+function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, poiData = [], routeData = null, resolvedSourceCoords = null, resolvedDestinationCoords = null) {
     // Use local currency if available, otherwise USD
     let currencySymbol = '$';
     let currencyCode = 'USD';
@@ -269,6 +325,7 @@ function displayResults(itinerary, budget, source, destination, days, budgetAmou
     displayBudget(budget, budgetAmount, currencySymbol, currencyCode, exchangeRateValue);
     displayRecommendations(itinerary, budget);
     displayOverview(source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate);
+    displayMapAndPois(routeData, poiData, resolvedSourceCoords, resolvedDestinationCoords);
 }
 
 // Display Itinerary Tab
@@ -553,8 +610,9 @@ function displayOverview(source, destination, days, budget, style, group, intere
 
     // Build weather section if available
     let weatherSection = '';
-    if (weatherData && weatherData.forecast && weatherData.forecast.length > 0) {
-        const forecast = weatherData.forecast.slice(0, 3); // Show first 3 days
+    const forecastSource = (weatherData && (weatherData.forecast || weatherData.forecasts)) || [];
+    if (forecastSource.length > 0) {
+        const forecast = forecastSource.slice(0, 3); // Show first 3 days
         weatherSection = `
             <div style="margin-top: 30px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white;">
                 <h3 style="margin: 0 0 15px 0; font-size: 18px;">🌤️ Weather Forecast</h3>
@@ -636,6 +694,288 @@ function displayOverview(source, destination, days, budget, style, group, intere
     content.innerHTML = html;
 }
 
+function displayMapAndPois(routeData, poiData, sourceCoords, destinationCoords) {
+    if (!mapLayout || !mapEmptyState) return;
+
+    const hasRoute = Boolean(routeData && routeData.geometry && Array.isArray(routeData.geometry.coordinates));
+    const hasPois = Array.isArray(poiData) && poiData.length > 0;
+
+    if (!hasRoute && !hasPois) {
+        mapLayout.classList.add('hidden');
+        mapEmptyState.classList.remove('hidden');
+        if (markerLayer) markerLayer.clearLayers();
+        if (routeLayer) routeLayer.clearLayers();
+        poiMarkerMap = {};
+        if (poiListEl) {
+            poiListEl.innerHTML = '<p style="color:#666;">No nearby attractions available for this destination yet.</p>';
+        }
+        if (routeSummaryEl) {
+            routeSummaryEl.classList.add('hidden');
+            routeSummaryEl.textContent = '';
+        }
+        return;
+    }
+
+    mapEmptyState.classList.add('hidden');
+    mapLayout.classList.remove('hidden');
+
+    updateLeafletMap(routeData, poiData, sourceCoords, destinationCoords);
+    renderPOIList(poiData);
+}
+
+async function fetchPOIData(coords, interests) {
+    const kinds = mapInterestsToKinds(interests);
+    const response = await fetch(`${API_URL}/pois`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            lat: coords.lat,
+            lon: coords.lon,
+            radius: 2500,
+            limit: 15,
+            kinds
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error('POI service unavailable');
+    }
+
+    const data = await response.json();
+    return data.pois || [];
+}
+
+async function fetchRouteData(sourceCoords, destinationCoords) {
+    const response = await fetch(`${API_URL}/route`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            source: sourceCoords,
+            destination: destinationCoords,
+            profile: 'driving-car'
+        })
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        throw new Error(data.error || 'Route service unavailable');
+    }
+
+    return data.route || null;
+}
+
+async function ensureCoords(label, cachedCoords) {
+    if (cachedCoords && cachedCoords.lat && cachedCoords.lon) {
+        return cachedCoords;
+    }
+
+    if (!label) {
+        return { lat: 0, lon: 0, country: '' };
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/autocomplete?q=${encodeURIComponent(label)}`);
+        if (!response.ok) return { lat: 0, lon: 0, country: '' };
+        const suggestions = await response.json();
+        if (Array.isArray(suggestions) && suggestions.length > 0) {
+            const first = suggestions[0];
+            return {
+                lat: parseFloat(first.lat) || 0,
+                lon: parseFloat(first.lon) || 0,
+                country: first.country || ''
+            };
+        }
+    } catch (err) {
+        console.warn('Failed to resolve coordinates', err);
+    }
+
+    return { lat: 0, lon: 0, country: '' };
+}
+
+function mapInterestsToKinds(interests) {
+    const interestKindMap = {
+        'History & Culture': ['cultural', 'historic', 'museums'],
+        'Food & Dining': ['foods', 'cafes', 'restaurants'],
+        'Adventure Sports': ['sport', 'active'],
+        'Nature': ['natural', 'beaches', 'parks'],
+        'Nightlife': ['adult', 'nightclubs'],
+        'Shopping': ['shops', 'malls'],
+        'Beach': ['beaches'],
+        'Mountains': ['mountains', 'natural'],
+        'Art & Museums': ['museums', 'architecture'],
+        'Photography': ['view_points', 'architecture', 'interesting_places']
+    };
+
+    const kinds = new Set();
+    (interests || []).forEach(interest => {
+        const mapped = interestKindMap[interest];
+        if (mapped) {
+            mapped.forEach(kind => kinds.add(kind));
+        }
+    });
+
+    if (!kinds.size) {
+        kinds.add('interesting_places');
+    }
+
+    return Array.from(kinds);
+}
+
+function initLeafletMap() {
+    const mapElement = document.getElementById('map');
+    if (!mapElement) return null;
+
+    if (mapInstance) {
+        mapInstance.invalidateSize();
+        return mapInstance;
+    }
+
+    mapInstance = L.map(mapElement, {
+        scrollWheelZoom: false
+    }).setView([20, 0], 2);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(mapInstance);
+
+    markerLayer = L.layerGroup().addTo(mapInstance);
+    routeLayer = L.layerGroup().addTo(mapInstance);
+
+    return mapInstance;
+}
+
+function updateLeafletMap(routeData, poiData, sourceCoords, destinationCoords) {
+    const map = initLeafletMap();
+    if (!map || !markerLayer || !routeLayer) return;
+
+    markerLayer.clearLayers();
+    routeLayer.clearLayers();
+    poiMarkerMap = {};
+
+    const bounds = [];
+
+    const addMarker = (coords, label, color = '#FF6B6B') => {
+        if (!coords || !coords.lat || !coords.lon) return;
+        const marker = L.circleMarker([coords.lat, coords.lon], {
+            radius: 8,
+            color,
+            weight: 2,
+            fillColor: color,
+            fillOpacity: 0.8
+        }).bindPopup(label);
+        marker.addTo(markerLayer);
+        bounds.push([coords.lat, coords.lon]);
+        return marker;
+    };
+
+    addMarker(sourceCoords, 'Source');
+    addMarker(destinationCoords, 'Destination', '#4ECDC4');
+
+    if (routeData && routeData.geometry && Array.isArray(routeData.geometry.coordinates)) {
+        const latLngs = routeData.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+        if (latLngs.length) {
+            L.polyline(latLngs, {
+                color: '#4ECDC4',
+                weight: 4,
+                opacity: 0.85
+            }).addTo(routeLayer);
+            bounds.push(...latLngs);
+        }
+
+        if (routeSummaryEl && (routeData.distance_m || routeData.duration_s)) {
+            routeSummaryEl.classList.remove('hidden');
+            routeSummaryEl.textContent = `${formatDistance(routeData.distance_m)} • ${formatDuration(routeData.duration_s)}`;
+        }
+    } else if (routeSummaryEl) {
+        if (routeErrorMessage) {
+            routeSummaryEl.classList.remove('hidden');
+            routeSummaryEl.textContent = `Route unavailable: ${routeErrorMessage}`;
+        } else {
+            routeSummaryEl.classList.add('hidden');
+            routeSummaryEl.textContent = '';
+        }
+    }
+
+    if (Array.isArray(poiData) && poiData.length) {
+        poiData.forEach(poi => {
+            if (!poi.lat || !poi.lon) return;
+            const marker = L.marker([poi.lat, poi.lon]).addTo(markerLayer);
+            marker.bindPopup(`<strong>${poi.name}</strong><br>${poi.address || ''}`);
+            poiMarkerMap[poi.id] = marker;
+            bounds.push([poi.lat, poi.lon]);
+        });
+    }
+
+    if (bounds.length) {
+        map.fitBounds(bounds, { padding: [30, 30] });
+    } else {
+        const fallbackLat = (destinationCoords && destinationCoords.lat) || 0;
+        const fallbackLon = (destinationCoords && destinationCoords.lon) || 0;
+        map.setView([fallbackLat, fallbackLon], fallbackLat ? 11 : 2);
+    }
+}
+
+function renderPOIList(pois = []) {
+    if (!poiListEl) return;
+
+    if (!pois.length) {
+        poiListEl.innerHTML = '<p style="color:#666;">No recommended attractions from OpenTripMap.</p>';
+        return;
+    }
+
+    poiListEl.innerHTML = pois.map((poi, index) => {
+        const distance = poi.dist_m ? `${formatDistance(poi.dist_m)} away` : '';
+        const poiKinds = Array.isArray(poi.kinds)
+            ? poi.kinds
+            : (typeof poi.kinds === 'string' ? poi.kinds.split(',') : []);
+        const tags = poiKinds.slice(0, 3).map(kind => `<span class="poi-badge">${kind.replace(/_/g, ' ')}</span>`).join('');
+        const description = poi.description || 'Tap to view this place on the map.';
+        return `
+            <div class="poi-card" data-poi-id="${poi.id}">
+                <div class="poi-meta">#${index + 1} ${distance}</div>
+                <h4>${poi.name}</h4>
+                <div class="poi-description">${description}</div>
+                <div style="margin-top:8px;">${tags}</div>
+            </div>
+        `;
+    }).join('');
+
+    poiListEl.querySelectorAll('.poi-card').forEach(card => {
+        card.addEventListener('click', () => {
+            const poiId = card.dataset.poiId;
+            focusOnPoi(poiId);
+        });
+    });
+}
+
+function focusOnPoi(poiId) {
+    const marker = poiMarkerMap[poiId];
+    if (marker && mapInstance) {
+        marker.openPopup();
+        mapInstance.panTo(marker.getLatLng());
+    }
+}
+
+function formatDistance(distanceMeters = 0) {
+    if (!distanceMeters) return 'N/A';
+    if (distanceMeters < 1000) {
+        return `${Math.round(distanceMeters)} m`;
+    }
+    return `${(distanceMeters / 1000).toFixed(1)} km`;
+}
+
+function formatDuration(durationSeconds = 0) {
+    if (!durationSeconds) return 'N/A';
+    const minutes = Math.round(durationSeconds / 60);
+    if (minutes < 60) {
+        return `${minutes} min`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
 // Tab Click Handler
 function handleTabClick(e) {
     const tabName = e.target.dataset.tab;
@@ -647,6 +987,16 @@ function handleTabClick(e) {
     // Add active class to clicked button and corresponding content
     e.target.classList.add('active');
     document.getElementById(`${tabName}-tab`).classList.add('active');
+
+    if (tabName === 'map') {
+        setTimeout(() => {
+            if (mapInstance) {
+                mapInstance.invalidateSize();
+            } else {
+                initLeafletMap();
+            }
+        }, 200);
+    }
 }
 
 // Autocomplete Utility Functions
