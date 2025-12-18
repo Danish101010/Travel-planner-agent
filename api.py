@@ -20,7 +20,8 @@ from travel_data import (
     get_travel_advisory,
     get_exchange_rate,
     get_pois,
-    get_route_directions
+    get_route_directions,
+    get_hotels,
 )
 from transport_pricing import build_transport_pricing
 import os
@@ -29,6 +30,7 @@ import logging
 from datetime import datetime
 import time
 import copy
+from collections import defaultdict, deque
 
 # Configuration
 class Config:
@@ -61,6 +63,138 @@ logger = logging.getLogger(__name__)
 
 _exchange_rate_cache = {}
 _travel_keywords = ('depart', 'departure', 'flight', 'train', 'transfer', 'journey', 'travel', 'transit')
+CACHE_TTL_SECONDS = 3600
+_poi_cache = {}
+_hotel_cache = {}
+_cost_history: defaultdict[str, deque] = defaultdict(lambda: deque(maxlen=120))
+
+
+def _build_cache_key(name: str, date: str, tag: str) -> str:
+    normalized_name = (name or 'unknown').strip().lower() or 'unknown'
+    normalized_date = date or 'any'
+    return f"{normalized_name}|{normalized_date}|{tag}"
+
+
+def _get_cached_entry(cache: dict, key: str):
+    payload = cache.get(key)
+    if not payload:
+        return None
+    if time.time() - payload['ts'] > CACHE_TTL_SECONDS:
+        cache.pop(key, None)
+        return None
+    return copy.deepcopy(payload['data'])
+
+
+def _set_cache_entry(cache: dict, key: str, data):
+    cache[key] = {
+        'data': copy.deepcopy(data),
+        'ts': time.time()
+    }
+
+
+def _cached_geo_result(cache: dict, key: str, fetcher, fallback=None):
+    cached = _get_cached_entry(cache, key)
+    if cached is not None:
+        return cached
+    try:
+        data = fetcher() or fallback or []
+    except Exception as exc:
+        logger.warning('Geo cache fetch failed for %s: %s', key, exc)
+        data = fallback or []
+    _set_cache_entry(cache, key, data)
+    return data
+
+
+def _history_average(category: str) -> float:
+    values = _cost_history.get(category)
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _record_history(category: str, value: int) -> None:
+    if value <= 0:
+        return
+    _cost_history[category].append(value)
+
+
+def _smooth_cost_outliers(itinerary):
+    if not isinstance(itinerary, dict):
+        return itinerary
+    schedule = itinerary.get('itinerary')
+    if not isinstance(schedule, list):
+        return itinerary
+
+    updated_days = []
+    for day in schedule:
+        if not isinstance(day, dict):
+            updated_days.append(day)
+            continue
+        day_copy = copy.deepcopy(day)
+        for activity in day_copy.get('activities', []):
+            if not isinstance(activity, dict):
+                continue
+            category = (activity.get('category') or 'general').lower()
+            cost = _safe_int(activity.get('estimated_cost') or activity.get('cost'))
+            avg = _history_average(category)
+            if avg and cost:
+                lower = avg * 0.4
+                upper = avg * 2.2
+                if cost < lower:
+                    cost = int(lower)
+                elif cost > upper:
+                    cost = int(upper)
+            if cost:
+                activity['estimated_cost'] = cost
+                activity['cost'] = cost
+                _record_history(category, cost)
+        updated_days.append(day_copy)
+
+    itinerary['itinerary'] = updated_days
+    return itinerary
+
+
+def _inject_hotel_recommendations(itinerary, hotels, destination_name):
+    if not isinstance(itinerary, dict) or not hotels:
+        return itinerary
+
+    itinerary.setdefault('meta', {})['hotels'] = hotels[:5]
+    schedule = itinerary.get('itinerary')
+    if not isinstance(schedule, list) or not schedule:
+        return itinerary
+
+    first_day = schedule[0]
+    if not isinstance(first_day, dict):
+        return itinerary
+
+    meta = first_day.setdefault('meta', {})
+    if meta.get('lodging_injected'):
+        return itinerary
+
+    meta['lodging_injected'] = True
+    first_day['lodging'] = hotels[:3]
+    activities = first_day.get('activities')
+    if not isinstance(activities, list):
+        activities = []
+        first_day['activities'] = activities
+
+    primary = hotels[0]
+    anchor_time = '09:00'
+    if activities and isinstance(activities[0], dict):
+        anchor_time = activities[0].get('time') or anchor_time
+
+    check_in_entry = {
+        'time': anchor_time,
+        'activity': f"Check-in: {primary.get('name', 'Hotel')}",
+        'location': primary.get('address') or destination_name or 'City Center',
+        'description': primary.get('description') or 'Suggested lodging near key attractions.',
+        'category': 'lodging',
+        'estimated_cost': 0,
+        'tip': 'Geoapify hotel recommendation'
+    }
+    activities.insert(0, check_in_entry)
+
+    return itinerary
 
 
 def _safe_int(value):
@@ -317,6 +451,7 @@ def generate_itinerary():
         destination_details.setdefault('name', destination)
 
         meal_pois = []
+        hotel_recs = []
         try:
             dest_lat = float(destination_details.get('lat'))
             dest_lon = float(destination_details.get('lon'))
@@ -324,16 +459,32 @@ def generate_itinerary():
             dest_lat = dest_lon = None
 
         if dest_lat is not None and dest_lon is not None:
-            try:
-                meal_pois = get_pois(
+            cache_tag = _build_cache_key(destination, start_date or '', 'meals')
+            meal_pois = _cached_geo_result(
+                _poi_cache,
+                cache_tag,
+                lambda: get_pois(
                     lat=dest_lat,
                     lon=dest_lon,
                     kinds='foods,cafes,restaurants',
                     radius=1500,
                     limit=20,
-                )
-            except Exception as exc:
-                logger.warning('Meal POI lookup failed: %s', exc)
+                ),
+                fallback=[]
+            )
+
+            hotel_tag = _build_cache_key(destination, start_date or '', 'hotels')
+            hotel_recs = _cached_geo_result(
+                _hotel_cache,
+                hotel_tag,
+                lambda: get_hotels(
+                    lat=dest_lat,
+                    lon=dest_lon,
+                    radius=2500,
+                    limit=6,
+                ),
+                fallback=[]
+            )
 
         # Validate input constraints
         if not source:
@@ -368,6 +519,8 @@ def generate_itinerary():
         if meal_pois:
             itinerary = apply_meal_pois(itinerary, meal_pois, itinerary_raw)
             itinerary = normalize_itinerary_costs(itinerary, budget, days)
+        if hotel_recs:
+            itinerary = _inject_hotel_recommendations(itinerary, hotel_recs, destination)
         
         # Generate budget breakdown
         budget_raw = budget_agent(destination, days, budget, style, source, travelers)
@@ -387,6 +540,7 @@ def generate_itinerary():
             budget_info,
             transport_options,
         )
+        itinerary = _smooth_cost_outliers(itinerary)
         if transport_summary:
             transport_options['applied_quote'] = transport_summary
 
@@ -401,6 +555,7 @@ def generate_itinerary():
             'budget_normalized': budget_info,
             'budget_raw': budget_raw,
             'transport': transport_options,
+            'hotels': hotel_recs,
             'group': {
                 'type': group,
                 'travelers': travelers,
@@ -565,7 +720,15 @@ def api_pois():
         if not lat or not lon:
             return jsonify({'error': 'Latitude and longitude are required'}), 400
 
-        pois = get_pois(lat, lon, kinds=kinds, radius=radius, limit=limit)
+        cache_name = f"{lat:.3f},{lon:.3f}"
+        cache_date = f"{radius}:{limit}:{kinds or 'any'}"
+        cache_key = _build_cache_key(cache_name, cache_date, 'pois')
+        pois = _cached_geo_result(
+            _poi_cache,
+            cache_key,
+            lambda: get_pois(lat, lon, kinds=kinds, radius=radius, limit=limit),
+            fallback=[]
+        )
         return jsonify({'pois': pois}), 200
     except ValueError as e:
         logger.warning(f"POI input error: {str(e)}")

@@ -295,6 +295,61 @@ body {
     transition: var(--transition);
 }
 
+.inline-transport-card {
+    background: #0d2038;
+    color: #f4f4f4;
+    padding: 18px;
+    border-radius: 10px;
+    margin-bottom: 25px;
+    box-shadow: 0 20px 35px rgba(13, 32, 56, 0.35);
+}
+
+.inline-transport-pill {
+    display: inline-flex;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.15);
+    font-size: 12px;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+}
+
+.inline-transport-body {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
+}
+
+.inline-transport-title {
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.inline-transport-meta {
+    font-size: 13px;
+    opacity: 0.8;
+    margin-top: 4px;
+}
+
+.inline-transport-price {
+    font-size: 32px;
+    font-weight: 700;
+    text-align: right;
+}
+
+.inline-transport-price span {
+    display: block;
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+.inline-transport-footnote {
+    margin-top: 12px;
+    font-size: 13px;
+    opacity: 0.85;
+}
+
 .day-card:hover {
     box-shadow: var(--shadow);
     transform: translateX(4px);
@@ -332,6 +387,11 @@ body {
     border-radius: 6px;
 }
 
+.activity-item.muted {
+    opacity: 0.7;
+    font-style: italic;
+}
+
 .activity-time {
     font-weight: 600;
     color: var(--secondary-color);
@@ -365,6 +425,29 @@ body {
     border-radius: 8px;
     padding: 16px;
     border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.meal-columns {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+}
+
+.meal-column {
+    background: rgba(78, 205, 196, 0.08);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.meal-column-heading {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--secondary-color);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .meal-section-header {
@@ -441,6 +524,128 @@ body {
 
 .activity-link:hover {
     text-decoration: underline;
+}
+
+.hotel-spotlight {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    margin-bottom: 25px;
+}
+
+.hotel-spotlight-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 15px;
+}
+
+.hotel-spotlight-title {
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.hotel-spotlight-subtitle {
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+.hotel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 15px;
+}
+
+.hotel-card {
+    padding: 16px;
+    border-radius: 10px;
+    background: var(--light-bg);
+    border: 1px dashed rgba(0, 0, 0, 0.08);
+}
+
+.hotel-card-name {
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.hotel-card-address {
+    font-size: 14px;
+    color: var(--text-light);
+    margin-bottom: 4px;
+}
+
+.hotel-card-distance {
+    font-size: 12px;
+    color: var(--secondary-color);
+    font-weight: 600;
+}
+
+.lodging-section {
+    margin-top: 18px;
+    background: white;
+    border-radius: 10px;
+    padding: 16px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.lodging-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 10px;
+}
+
+.lodging-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.lodging-card {
+    background: var(--light-bg);
+    border-radius: 8px;
+    padding: 12px;
+    border-left: 3px solid var(--secondary-color);
+}
+
+.lodging-name {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.lodging-address {
+    font-size: 14px;
+    color: var(--text-light);
+}
+
+.lodging-distance {
+    font-size: 12px;
+    color: var(--secondary-color);
+    margin-top: 4px;
+}
+
+.day-card-footer {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+.transparency-footer {
+    margin-top: 30px;
+    padding: 16px;
+    background: #101828;
+    color: rgba(255, 255, 255, 0.9);
+    border-radius: 10px;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
 /* Budget Metrics */

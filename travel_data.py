@@ -36,6 +36,8 @@ DEFAULT_POI_KINDS = [
     'foods', 'restaurants', 'shops', 'sport', 'interesting_places'
 ]
 
+HOTEL_KINDS = ['hotels', 'hostels', 'guest_houses']
+
 DEFAULT_POI_CATEGORIES = [
     'tourism.sights',
     'tourism.attraction',
@@ -59,6 +61,9 @@ KIND_CATEGORY_MAP = {
     'interesting_places': ['tourism.attraction'],
     'beaches': ['natural.beach'],
     'mountains': ['natural.mountain'],
+    'hotels': ['accommodation.hotel'],
+    'hostels': ['accommodation.hostel'],
+    'guest_houses': ['accommodation.guest_house'],
 }
 
 LOCAL_COUNTRY_OVERRIDES = {
@@ -543,6 +548,20 @@ def get_pois(lat: float, lon: float, kinds=None, radius: Optional[int] = None,
 
     pois.sort(key=_poi_rank_key)
     return pois[:normalized_limit]
+
+
+def get_hotels(lat: float, lon: float, radius: Optional[int] = None,
+               limit: Optional[int] = None, api_key: Optional[str] = None):
+    radius_value = radius or 2000
+    limit_value = limit or 6
+    return get_pois(
+        lat=lat,
+        lon=lon,
+        kinds=HOTEL_KINDS,
+        radius=radius_value,
+        limit=limit_value,
+        api_key=api_key,
+    )
 
 
 def _normalize_kind_list(kinds) -> List[str]:

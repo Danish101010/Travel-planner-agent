@@ -238,6 +238,7 @@ async function handleFormSubmit(e) {
             const budgetPayload = data.budget_normalized || data.budget;
             const groupContext = data.group || { type: group, travelers };
             const transportOptions = data.transport || null;
+            const hotelSpotlight = data.hotels || [];
             const startDateValue = (groupContext && groupContext.start_date) || startDate;
 
             routeErrorMessage = '';
@@ -282,7 +283,8 @@ async function handleFormSubmit(e) {
                 destinationCoords,
                 transportOptions,
                 groupContext,
-                startDateValue
+                startDateValue,
+                hotelSpotlight
             );
 
             resultsSection.classList.remove('hidden');
@@ -299,7 +301,7 @@ async function handleFormSubmit(e) {
 }
 
 // Display Results
-function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, poiData = [], routeData = null, resolvedSourceCoords = null, resolvedDestinationCoords = null, transport = null, groupContext = null, startDate = '') {
+function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, poiData = [], routeData = null, resolvedSourceCoords = null, resolvedDestinationCoords = null, transport = null, groupContext = null, startDate = '', hotels = []) {
     // Use local currency if available, otherwise USD
     let currencySymbol = '$';
     let currencyCode = 'USD';
@@ -317,7 +319,7 @@ function displayResults(itinerary, budget, source, destination, days, budgetAmou
         }
     }
 
-    displayItinerary(itinerary, destination, days, currencySymbol, currencyCode, exchangeRateValue, travelersCount);
+    displayItinerary(itinerary, destination, days, currencySymbol, currencyCode, exchangeRateValue, travelersCount, hotels);
     displayBudget(budget, budgetAmount, currencySymbol, currencyCode, exchangeRateValue, travelersCount);
     displayRecommendations(itinerary, budget);
     displayOverview(source, destination, days, budgetAmount, style, groupLabel, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, transport, { travelers: travelersCount, startDate });
@@ -325,55 +327,47 @@ function displayResults(itinerary, budget, source, destination, days, budgetAmou
 }
 
 // Display Itinerary Tab
-function displayItinerary(itinerary, destination, days, currencySymbol = '$', currencyCode = 'USD', exchangeRate = 1, travelers = 1) {
+function displayItinerary(itinerary, destination, days, currencySymbol = '$', currencyCode = 'USD', exchangeRate = 1, travelers = 1, hotelSeed = []) {
     const title = document.getElementById('itineraryTitle');
     const content = document.getElementById('itineraryContent');
 
     const groupNote = travelers > 1 ? `<span class="itinerary-subtitle">Costs for ${travelers} travelers</span>` : '';
     title.innerHTML = `Your ${days}-Day Itinerary in ${destination} ${groupNote}`;
 
-    // Helper function to convert and format currency
-    const convertCurrency = (usdAmount) => {
-        const converted = usdAmount * exchangeRate;
-        return Math.round(converted); // Round to whole number for cleaner display
+    const convertCurrency = (usdAmount = 0) => {
+        const converted = (usdAmount || 0) * exchangeRate;
+        return Math.round(converted);
     };
 
     let html = '';
+    const transportSummary = itinerary.meta && itinerary.meta.transport_quote;
+    const hotelSuggestions = (itinerary.meta && Array.isArray(itinerary.meta.hotels) && itinerary.meta.hotels.length)
+        ? itinerary.meta.hotels
+        : hotelSeed;
+
+    if (transportSummary) {
+        html += renderInlineTransport(transportSummary, currencySymbol, exchangeRate, travelers);
+    }
+
+    if (hotelSuggestions && hotelSuggestions.length) {
+        html += renderHotelSpotlight(hotelSuggestions);
+    }
 
     if (itinerary.itinerary && Array.isArray(itinerary.itinerary)) {
         itinerary.itinerary.forEach(dayPlan => {
             const dayTotal = convertCurrency(dayPlan.total_cost || 0);
-            const mealSource = dayPlan.meta && dayPlan.meta.meal_source ? `Curated via ${dayPlan.meta.meal_source === 'geoapify' ? 'Geoapify' : 'Planner'}` : '';
-
-            const mealsHtml = (dayPlan.meals && dayPlan.meals.length)
-                ? dayPlan.meals.map(meal => {
-                    const mealCost = convertCurrency(meal.cost);
-                    const addressLine = meal.address ? `<div class="activity-location">📍 ${meal.address}</div>` : '';
-                    const sourceLink = meal.source_url ? `<a href="${meal.source_url}" target="_blank" rel="noopener" class="activity-link">View details</a>` : '';
-                    return `
-                        <div class="meal-card">
-                            <div class="meal-card-header">
-                                <span class="meal-time">${meal.time}</span>
-                                <span class="meal-type">${meal.type || meal.meal_type || 'Meal'}</span>
-                            </div>
-                            <div class="meal-name">${meal.restaurant}</div>
-                            <div class="meal-cuisine">${meal.cuisine || 'Local cuisine'}</div>
-                            ${addressLine}
-                            <div class="meal-meta">
-                                <span>💵 ${currencySymbol}${mealCost.toLocaleString()}</span>
-                                <span>${meal.specialty || ''}</span>
-                            </div>
-                            ${sourceLink}
-                        </div>
-                    `;
-                }).join('')
-                : '<div class="meal-card muted">Meals will be slotted once the operator confirms availability.</div>';
+            const mealSource = dayPlan.meta && dayPlan.meta.meal_source
+                ? `Curated via ${dayPlan.meta.meal_source === 'geoapify' ? 'Geoapify' : 'Planner'}`
+                : 'Planner curated';
+            const activities = Array.isArray(dayPlan.activities) ? dayPlan.activities : [];
+            const mealsHtml = renderMealColumns(dayPlan.meals, convertCurrency, currencySymbol);
+            const lodgingHtml = renderLodgingBlock(dayPlan.lodging);
 
             html += `
                 <div class="day-card">
                     <div class="day-card-header">
                         <div>
-                            <div class="day-card-title">Day ${dayPlan.day} - ${dayPlan.theme || 'Explore'}</div>
+                            <div class="day-card-title">Day ${dayPlan.day || ''} - ${dayPlan.theme || 'Explore'}</div>
                             <div class="day-card-theme">${dayPlan.date || ''}</div>
                         </div>
                         <div class="activity-cost" style="font-size: 20px;">${currencySymbol}${dayTotal.toLocaleString()}</div>
@@ -382,20 +376,22 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
                     <div class="day-activities-grid">
                         <div>
                             <h4 style="margin-bottom: 10px; color: #4ECDC4;">🎯 Activities</h4>
-                            ${dayPlan.activities.map(activity => {
-                                const activityCost = convertCurrency(activity.cost);
+                            ${activities.length ? activities.map(activity => {
+                                const activityCost = convertCurrency(activity.cost || activity.estimated_cost || 0);
+                                const location = activity.location ? `📍 ${activity.location}` : '';
+                                const description = activity.description || '';
                                 return `
                                     <div class="activity-item">
-                                        <div class="activity-time">${activity.time}</div>
-                                        <div class="activity-name">${activity.activity}</div>
-                                        <div class="activity-location">📍 ${activity.location}</div>
+                                        <div class="activity-time">${activity.time || 'TBD'}</div>
+                                        <div class="activity-name">${activity.activity || 'Experience'}</div>
+                                        <div class="activity-location">${location}</div>
                                         <div style="margin-top: 8px;">
                                             <div class="activity-cost">💵 ${currencySymbol}${activityCost.toLocaleString()}</div>
-                                            <div style="font-size: 13px; color: #666; margin-top: 4px;">${activity.description}</div>
+                                            <div style="font-size: 13px; color: #666; margin-top: 4px;">${description}</div>
                                         </div>
                                     </div>
                                 `;
-                            }).join('')}
+                            }).join('') : '<div class="activity-item muted">Operator is still finalizing your on-ground flow.</div>'}
                         </div>
                     </div>
 
@@ -404,15 +400,23 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
                             <h4>🍽️ Meal Track</h4>
                             <span>${mealSource}</span>
                         </div>
-                        <div class="meal-grid">
-                            ${mealsHtml}
-                        </div>
+                        ${mealsHtml}
+                    </div>
+
+                    ${lodgingHtml}
+
+                    <div class="day-card-footer">
+                        <span>Spending normalized in ${currencyCode || 'USD'}.</span>
+                        <span>${mealSource}</span>
                     </div>
                 </div>
             `;
         });
     }
 
+    if (html) {
+        html += renderTransparencyFooter();
+    }
     content.innerHTML = html || '<p>No itinerary data available</p>';
 }
 
@@ -779,6 +783,160 @@ function renderTransportSection(transport, travelers = 1) {
             <div class="transport-grid">
                 ${quoteCards}
             </div>
+        </div>
+    `;
+}
+
+function renderInlineTransport(summary, currencySymbol, exchangeRate, travelers = 1) {
+    if (!summary) {
+        return '';
+    }
+
+    const usdAmount = Math.max(0, Number(summary.usd_amount) || 0);
+    const converted = Math.round(usdAmount * exchangeRate);
+    const nativeAmount = summary.native_amount
+        ? `${summary.currency || 'USD'} ${Math.round(summary.native_amount).toLocaleString()}`
+        : '';
+    const modeLabel = (summary.mode || 'transport').replace(/_/g, ' ').toUpperCase();
+    const provider = summary.provider || 'Preferred carrier';
+    const travelDay = summary.travel_day ? `Day ${summary.travel_day}` : 'Travel day';
+    const footnoteBits = [];
+    if (nativeAmount) footnoteBits.push(`Local: ${nativeAmount}`);
+    if (summary.notes) footnoteBits.push(summary.notes);
+
+    return `
+        <div class="inline-transport-card">
+            <div class="inline-transport-pill">${modeLabel}</div>
+            <div class="inline-transport-body">
+                <div>
+                    <div class="inline-transport-title">${provider}</div>
+                    <div class="inline-transport-meta">${travelDay} • Injected from live quotes</div>
+                </div>
+                <div class="inline-transport-price">
+                    ${currencySymbol}${converted.toLocaleString()}
+                    <span>group of ${travelers}</span>
+                </div>
+            </div>
+            ${footnoteBits.length ? `<div class="inline-transport-footnote">${footnoteBits.join(' • ')}</div>` : ''}
+        </div>
+    `;
+}
+
+function renderHotelSpotlight(hotels = []) {
+    if (!Array.isArray(hotels) || !hotels.length) {
+        return '';
+    }
+
+    const cards = hotels.slice(0, 3).map(hotel => {
+        const safeDistance = hotel.dist_m ? `${(hotel.dist_m / 1000).toFixed(1)} km radius` : 'Central district';
+        return `
+            <div class="hotel-card">
+                <div class="hotel-card-name">${hotel.name || 'Hotel option'}</div>
+                <div class="hotel-card-address">${hotel.address || hotel.description || 'Near key attractions'}</div>
+                <div class="hotel-card-distance">${safeDistance}</div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="hotel-spotlight">
+            <div class="hotel-spotlight-header">
+                <div class="hotel-spotlight-title">🏨 Stay near the action</div>
+                <div class="hotel-spotlight-subtitle">Powered by Geoapify Places</div>
+            </div>
+            <div class="hotel-grid">${cards}</div>
+        </div>
+    `;
+}
+
+function renderMealColumns(meals = [], convertCurrency = (value) => value, currencySymbol = '$') {
+    if (!Array.isArray(meals) || !meals.length) {
+        return '<div class="meal-card muted">Meals will be slotted once the operator confirms availability.</div>';
+    }
+
+    const order = [
+        { key: 'breakfast', label: 'Breakfast', icon: '☀️' },
+        { key: 'lunch', label: 'Lunch', icon: '🥗' },
+        { key: 'dinner', label: 'Dinner', icon: '🌙' },
+        { key: 'snack', label: 'Snacks', icon: '🍰' }
+    ];
+
+    const columns = order.map(config => {
+        const items = meals.filter(meal => resolveMealBucket(meal) === config.key);
+        return { ...config, items };
+    }).filter(column => column.items.length);
+
+    const buckets = columns.length ? columns : [{ key: 'meal', label: 'Meals', icon: '🍽️', items: meals }];
+
+    return `
+        <div class="meal-columns">
+            ${buckets.map(bucket => `
+                <div class="meal-column">
+                    <div class="meal-column-heading">${bucket.icon} ${bucket.label}</div>
+                    ${bucket.items.map(meal => {
+                        const mealCost = convertCurrency(meal.cost || 0);
+                        const addressLine = meal.address ? `<div class="activity-location">📍 ${meal.address}</div>` : '';
+                        const sourceLink = meal.source_url ? `<a href="${meal.source_url}" target="_blank" rel="noopener" class="activity-link">View details</a>` : '';
+                        return `
+                            <div class="meal-card">
+                                <div class="meal-card-header">
+                                    <span class="meal-time">${meal.time || ''}</span>
+                                    <span class="meal-type">${meal.type || meal.meal_type || bucket.label}</span>
+                                </div>
+                                <div class="meal-name">${meal.restaurant || 'Meal stop'}</div>
+                                <div class="meal-cuisine">${meal.cuisine || 'Local cuisine'}</div>
+                                ${addressLine}
+                                <div class="meal-meta">
+                                    <span>💵 ${currencySymbol}${mealCost.toLocaleString()}</span>
+                                    <span>${meal.specialty || ''}</span>
+                                </div>
+                                ${sourceLink}
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function resolveMealBucket(meal) {
+    const raw = String(meal && (meal.type || meal.meal_type || meal.time || '')).toLowerCase();
+    if (raw.includes('breakfast') || raw.includes('morning')) return 'breakfast';
+    if (raw.includes('lunch') || raw.includes('midday')) return 'lunch';
+    if (raw.includes('dinner') || raw.includes('evening') || raw.includes('supper')) return 'dinner';
+    return 'snack';
+}
+
+function renderLodgingBlock(lodging = []) {
+    if (!Array.isArray(lodging) || !lodging.length) {
+        return '';
+    }
+
+    const cards = lodging.slice(0, 3).map(hotel => {
+        const distance = hotel.dist_m ? `${(hotel.dist_m / 1000).toFixed(1)} km radius` : '';
+        return `
+            <div class="lodging-card">
+                <div class="lodging-name">${hotel.name || 'Hotel option'}</div>
+                <div class="lodging-address">${hotel.address || hotel.description || 'Central location'}</div>
+                ${distance ? `<div class="lodging-distance">${distance}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="lodging-section">
+            <div class="lodging-title">🏨 Lodging focus</div>
+            <div class="lodging-grid">${cards}</div>
+        </div>
+    `;
+}
+
+function renderTransparencyFooter() {
+    return `
+        <div class="transparency-footer">
+            <span>Data sources: Geoapify Places (POIs, meals, hotels), OpenRouteService (routes), ExchangeRate-API.</span>
+            <span>Estimates refreshed hourly with cached medians for stability.</span>
         </div>
     `;
 }
