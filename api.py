@@ -10,6 +10,7 @@ from planner import (
     budget_agent,
     normalize_itinerary_costs,
     normalize_budget_estimate,
+    apply_meal_pois,
 )
 from travel_data import (
     autocomplete_destination, 
@@ -315,6 +316,25 @@ def generate_itinerary():
         source_details.setdefault('name', source)
         destination_details.setdefault('name', destination)
 
+        meal_pois = []
+        try:
+            dest_lat = float(destination_details.get('lat'))
+            dest_lon = float(destination_details.get('lon'))
+        except (TypeError, ValueError):
+            dest_lat = dest_lon = None
+
+        if dest_lat is not None and dest_lon is not None:
+            try:
+                meal_pois = get_pois(
+                    lat=dest_lat,
+                    lon=dest_lon,
+                    kinds='foods,cafes,restaurants',
+                    radius=1500,
+                    limit=20,
+                )
+            except Exception as exc:
+                logger.warning('Meal POI lookup failed: %s', exc)
+
         # Validate input constraints
         if not source:
             return jsonify({'success': False, 'error': 'Source cannot be empty'}), 400
@@ -345,6 +365,9 @@ def generate_itinerary():
         if not itinerary_raw:
             raise ValueError('Planner failed to return itinerary data')
         itinerary = normalize_itinerary_costs(copy.deepcopy(itinerary_raw), budget, days)
+        if meal_pois:
+            itinerary = apply_meal_pois(itinerary, meal_pois, itinerary_raw)
+            itinerary = normalize_itinerary_costs(itinerary, budget, days)
         
         # Generate budget breakdown
         budget_raw = budget_agent(destination, days, budget, style, source, travelers)
@@ -409,7 +432,6 @@ def health():
         env_vars = {
             'GOOGLE_API_KEY': bool(os.getenv('GOOGLE_API_KEY')),
             'TAVILY_API_KEY': bool(os.getenv('TAVILY_API_KEY')),
-            'OPENTRIPMAP_API_KEY': bool(os.getenv('OPENTRIPMAP_API_KEY')),
             'ORS_API_KEY': bool(os.getenv('ORS_API_KEY')),
             'GEOAPIFY_API_KEY': bool(os.getenv('GEOAPIFY_API_KEY'))
         }
@@ -528,7 +550,7 @@ def api_timezone():
 
 @app.route('/api/pois', methods=['POST'])
 def api_pois():
-    """Get POIs near coordinates via OpenTripMap"""
+    """Get POIs near coordinates via Geoapify Places"""
     try:
         if not request.is_json:
             return jsonify({'error': 'Content-Type must be application/json'}), 400

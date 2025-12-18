@@ -353,6 +353,96 @@ body {
     color: var(--primary-color);
 }
 
+.day-activities-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.meal-section {
+    background: white;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.meal-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--text-light);
+    margin-bottom: 12px;
+    font-size: 14px;
+}
+
+.meal-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.meal-card {
+    background: var(--light-bg);
+    border-radius: 6px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.meal-card.muted {
+    opacity: 0.7;
+    text-align: center;
+    font-style: italic;
+}
+
+.meal-card-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--secondary-color);
+    font-weight: 600;
+}
+
+.meal-time {
+    font-weight: 600;
+}
+
+.meal-type {
+    color: var(--primary-color);
+    text-transform: uppercase;
+    font-size: 12px;
+}
+
+.meal-name {
+    font-weight: 600;
+    font-size: 16px;
+}
+
+.meal-cuisine {
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+.meal-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--text-light);
+}
+
+.activity-link {
+    font-size: 13px;
+    color: var(--secondary-color);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.activity-link:hover {
+    text-decoration: underline;
+}
+
 /* Budget Metrics */
 .budget-metrics {
     display: grid;

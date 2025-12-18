@@ -30,7 +30,7 @@ A comprehensive AI-powered travel planning application with a modern web interfa
 
 ✅ **Interactive Maps & Routing**
 - Leaflet + OpenStreetMap tiles for real-time visualization
-- Nearby attractions powered by OpenTripMap
+- Nearby attractions powered by Geoapify Places
 - Door-to-door route preview via OpenRouteService
 - Clickable POI list that pans/zooms the live map
 
@@ -53,9 +53,8 @@ On Windows PowerShell:
 ```powershell
 $env:GOOGLE_API_KEY="your_google_api_key_here"
 $env:TAVILY_API_KEY="your_tavily_api_key_here"
-$env:OPENTRIPMAP_API_KEY="your_opentripmap_key_here"   # for POIs
+$env:GEOAPIFY_API_KEY="your_geoapify_key_here"         # for autocomplete + POIs
 $env:ORS_API_KEY="your_openrouteservice_key_here"      # for routing
-$env:GEOAPIFY_API_KEY="your_geoapify_key_here"         # for live autocomplete
 $env:TEQUILA_API_KEY="your_kiwi_tequila_key_here"      # for live flight quotes (optional)
 ```
 
@@ -63,35 +62,9 @@ Or use `setx` for persistent variables:
 ```powershell
 setx GOOGLE_API_KEY "your_google_api_key_here"
 setx TAVILY_API_KEY "your_tavily_api_key_here"
-setx OPENTRIPMAP_API_KEY "your_opentripmap_key_here"
-setx ORS_API_KEY "your_openrouteservice_key_here"
 setx GEOAPIFY_API_KEY "your_geoapify_key_here"
-# Smart Travel Planner — Local Development Guide
-
-A simple guide to run the app locally on Windows (PowerShell). This app serves a modern web UI backed by a Flask API and uses Google Generative AI plus Tavily for research.
-
-## Quick Start
-
-1) Create and activate a virtual environment
-```powershell
-python -m venv .venv
-./.venv/Scripts/Activate.ps1
-pip install -r requirements.txt
-```
-
-2) Add your API keys in `api-keys`
-```text
-Line 1: <TAVILY_API_KEY>
-Line 2: <GOOGLE_API_KEY>
-Line 3 (optional but recommended): <OPENTRIPMAP_API_KEY>
-Line 4 (optional but recommended): <ORS_API_KEY>
-Line 5 (optional but recommended): <GEOAPIFY_API_KEY>
-```
-
-3) Load keys into the current shell and run
-```powershell
-./load-api-keys.ps1
-python api.py
+setx ORS_API_KEY "your_openrouteservice_key_here"
+setx TEQUILA_API_KEY "your_kiwi_tequila_key_here"
 ```
 
 Open http://127.0.0.1:5000 in your browser.
@@ -123,9 +96,9 @@ Open http://127.0.0.1:5000 in your browser.
 
 ## Map, POI & Routing Integrations
 
-- **OpenTripMap**: requires `OPENTRIPMAP_API_KEY`, used for nearby attractions (radius ~5km) and additional metadata such as descriptions, images, and categories.
+- **Geoapify Places**: requires `GEOAPIFY_API_KEY`, used for nearby attractions (radius ~5km), curated meal spots, and additional metadata such as addresses, categories, and websites.
 - **OpenRouteService**: requires `ORS_API_KEY`, used for basic routing between the selected source and destination (driving profile by default).
-- **Geoapify Autocomplete**: requires `GEOAPIFY_API_KEY`, used for global place suggestions (falls back to a small offline list if absent).
+- **Geoapify Autocomplete**: uses the same `GEOAPIFY_API_KEY` for global place suggestions (falls back to a small offline list if absent).
 - **Leaflet / OpenStreetMap**: no key needed; renders the live map, POI markers, and the ORS polyline.
 
 If the optional keys are not provided the rest of the planner continues to work, but the Map & Attractions tab will fall back to an empty state.

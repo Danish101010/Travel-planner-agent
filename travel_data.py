@@ -11,7 +11,7 @@ from functools import lru_cache
 import logging
 import urllib3
 import os
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import quote
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -25,7 +25,7 @@ GEONAMES_USERNAME = "demo"  # Free tier username
 RESTCOUNTRIES_URL = "https://restcountries.com/v3.1"
 TRAVEL_ADVISORY_URL = "https://www.travel-advisory.info/api"
 EXCHANGERATE_URL = "https://api.exchangerate-api.com/v4/latest"
-OPENTRIPMAP_BASE_URL = "https://api.opentripmap.com/0.1/en/places"
+GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
 OPENROUTESERVICE_BASE_URL = "https://api.openrouteservice.org/v2/directions"
 GEOAPIFY_AUTOCOMPLETE_URL = "https://api.geoapify.com/v1/geocode/autocomplete"
 NOMINATIM_AUTOCOMPLETE_URL = "https://nominatim.openstreetmap.org/search"
@@ -35,6 +35,31 @@ DEFAULT_POI_KINDS = [
     'cultural', 'historic', 'museums', 'natural', 'parks',
     'foods', 'restaurants', 'shops', 'sport', 'interesting_places'
 ]
+
+DEFAULT_POI_CATEGORIES = [
+    'tourism.sights',
+    'tourism.attraction',
+    'entertainment.culture',
+    'catering.restaurant',
+    'catering.cafe',
+    'leisure.park'
+]
+
+KIND_CATEGORY_MAP = {
+    'foods': ['catering.restaurant', 'catering.fast_food'],
+    'restaurants': ['catering.restaurant'],
+    'cafes': ['catering.cafe'],
+    'cultural': ['entertainment.culture', 'tourism.sights'],
+    'historic': ['heritage.sights', 'tourism.sights'],
+    'museums': ['entertainment.museum'],
+    'natural': ['natural', 'tourism.sights'],
+    'parks': ['leisure.park'],
+    'shops': ['commercial.shopping_mall', 'commercial.shopping_center'],
+    'sport': ['sport.sport_center'],
+    'interesting_places': ['tourism.attraction'],
+    'beaches': ['natural.beach'],
+    'mountains': ['natural.mountain'],
+}
 
 LOCAL_COUNTRY_OVERRIDES = {
     'india': {
@@ -453,10 +478,10 @@ def get_exchange_rate(from_currency: str = 'USD', to_currency: str = 'EUR'):
 
 def get_pois(lat: float, lon: float, kinds=None, radius: Optional[int] = None,
              limit: Optional[int] = None, api_key: Optional[str] = None):
-    """Fetch nearby points of interest using OpenTripMap."""
-    api_key = api_key or os.getenv('OPENTRIPMAP_API_KEY')
+    """Fetch nearby points of interest using Geoapify Places, ranked by popularity."""
+    api_key = api_key or os.getenv('GEOAPIFY_API_KEY')
     if not api_key:
-        raise ValueError('Missing OpenTripMap API key')
+        raise ValueError('Missing Geoapify API key')
 
     if not lat or not lon:
         raise ValueError('Latitude and longitude are required for POI lookup')
@@ -467,103 +492,95 @@ def get_pois(lat: float, lon: float, kinds=None, radius: Optional[int] = None,
     normalized_radius = max(500, min(radius_value, 5000))
     normalized_limit = max(5, min(limit_value, 18))
 
+    categories = _categories_from_kinds(kinds)
     params = {
-        'lat': lat,
-        'lon': lon,
-        'radius': normalized_radius,
-        'limit': normalized_limit * 2,  # request extra, filter later
-        'format': 'geojson',
-        'apikey': api_key,
-        'rate': 3  # prioritize well-rated spots
+        'categories': ','.join(categories),
+        'filter': f"circle:{lon},{lat},{normalized_radius}",
+        'bias': f"proximity:{lon},{lat}",
+        'limit': normalized_limit * 2,
+        'apiKey': api_key,
     }
-
-    if kinds:
-        if isinstance(kinds, (list, tuple, set)):
-            params['kinds'] = ','.join(sorted({k for k in kinds if k}))
-        else:
-            params['kinds'] = kinds
-    else:
-        params['kinds'] = ','.join(DEFAULT_POI_KINDS)
 
     try:
         response = requests.get(
-            f"{OPENTRIPMAP_BASE_URL}/radius",
+            GEOAPIFY_PLACES_URL,
             params=params,
             timeout=12
         )
         response.raise_for_status()
         data = response.json()
     except Exception as e:
-        logger.error(f"OpenTripMap radius error: {str(e)}")
+        logger.error(f"Geoapify places error: {str(e)}")
         return []
 
     pois = []
-    details_loaded = 0
-
     for feature in data.get('features', []):
         properties = feature.get('properties', {})
         geometry = feature.get('geometry', {})
-        name = properties.get('name')
-        xid = properties.get('xid')
-
-        if not name or not geometry:
+        coords = geometry.get('coordinates') or [None, None]
+        name = properties.get('name') or properties.get('address_line1') or properties.get('formatted')
+        if not name:
             continue
 
-        poi = {
-            'id': xid or name,
+        categories_raw = properties.get('categories') or categories
+        if isinstance(categories_raw, str):
+            categories_raw = [c.strip() for c in categories_raw.split(',') if c.strip()]
+
+        pois.append({
+            'id': properties.get('place_id') or feature.get('id') or name,
             'name': name,
-            'lat': geometry.get('coordinates', [None, None])[1],
-            'lon': geometry.get('coordinates', [None, None])[0],
-            'dist_m': properties.get('dist'),
-            'rate': properties.get('rate'),
-            'kinds': properties.get('kinds', '').split(',') if properties.get('kinds') else [],
-            'address': '',
-            'description': '',
+            'lat': coords[1] if len(coords) >= 2 else None,
+            'lon': coords[0] if len(coords) >= 2 else None,
+            'dist_m': properties.get('distance'),
+            'rate': (properties.get('rank') or {}).get('popularity') or (properties.get('rank') or {}).get('confidence'),
+            'kinds': categories_raw,
+            'address': properties.get('address_line1') or properties.get('formatted', ''),
+            'description': properties.get('place_description') or properties.get('address_line2') or '',
             'image': '',
-            'url': properties.get('otm')
-        }
+            'url': properties.get('website') or (properties.get('datasource') or {}).get('url'),
+            'source': 'geoapify'
+        })
 
-        if xid and details_loaded < normalized_limit:
-            detail = _get_poi_details(xid, api_key)
-            if detail:
-                poi['description'] = (
-                    detail.get('wikipedia_extracts', {}).get('text') or
-                    detail.get('info', {}).get('descr', '')
-                )
-                preview = detail.get('preview') or {}
-                poi['image'] = preview.get('source', '')
-                poi['url'] = detail.get('otm', detail.get('wikipedia', poi['url']))
-                address = detail.get('address', {})
-                components = [
-                    address.get('road'),
-                    address.get('house_number'),
-                    address.get('city'),
-                    address.get('state'),
-                    address.get('country')
-                ]
-                poi['address'] = ', '.join(filter(None, components))
-            details_loaded += 1
-
-        pois.append(poi)
-        if len(pois) >= normalized_limit:
-            break
-
-    return pois
+    pois.sort(key=_poi_rank_key)
+    return pois[:normalized_limit]
 
 
-def _get_poi_details(xid: str, api_key: str):
+def _normalize_kind_list(kinds) -> List[str]:
+    if not kinds:
+        return []
+    if isinstance(kinds, str):
+        items = [item.strip() for item in kinds.split(',') if item.strip()]
+        return items
+    result = []
+    for item in kinds:
+        if not item:
+            continue
+        result.append(str(item).strip())
+    return result
+
+
+def _categories_from_kinds(kinds) -> List[str]:
+    normalized = _normalize_kind_list(kinds) or DEFAULT_POI_KINDS
+    categories: List[str] = []
+    for kind in normalized:
+        mapped = KIND_CATEGORY_MAP.get(kind.lower())
+        if mapped:
+            categories.extend(mapped)
+    if not categories:
+        categories = DEFAULT_POI_CATEGORIES
+    return list(dict.fromkeys(categories))
+
+
+def _poi_rank_key(poi):
     try:
-        response = requests.get(
-            f"{OPENTRIPMAP_BASE_URL}/xid/{xid}",
-            params={'apikey': api_key},
-            timeout=10
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.warning(f"OpenTripMap detail error ({xid}): {str(e)}")
-        return None
-
+        rate = float(poi.get('rate') or 0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    try:
+        dist = float(poi.get('dist_m')) if poi.get('dist_m') is not None else float('inf')
+    except (TypeError, ValueError):
+        dist = float('inf')
+    return (-rate, dist)
 
 def get_route_directions(source: dict, destination: dict, profile: str = 'driving-car',
                          api_key: Optional[str] = None):

@@ -343,7 +343,32 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
     if (itinerary.itinerary && Array.isArray(itinerary.itinerary)) {
         itinerary.itinerary.forEach(dayPlan => {
             const dayTotal = convertCurrency(dayPlan.total_cost || 0);
-            
+            const mealSource = dayPlan.meta && dayPlan.meta.meal_source ? `Curated via ${dayPlan.meta.meal_source === 'geoapify' ? 'Geoapify' : 'Planner'}` : '';
+
+            const mealsHtml = (dayPlan.meals && dayPlan.meals.length)
+                ? dayPlan.meals.map(meal => {
+                    const mealCost = convertCurrency(meal.cost);
+                    const addressLine = meal.address ? `<div class="activity-location">📍 ${meal.address}</div>` : '';
+                    const sourceLink = meal.source_url ? `<a href="${meal.source_url}" target="_blank" rel="noopener" class="activity-link">View details</a>` : '';
+                    return `
+                        <div class="meal-card">
+                            <div class="meal-card-header">
+                                <span class="meal-time">${meal.time}</span>
+                                <span class="meal-type">${meal.type || meal.meal_type || 'Meal'}</span>
+                            </div>
+                            <div class="meal-name">${meal.restaurant}</div>
+                            <div class="meal-cuisine">${meal.cuisine || 'Local cuisine'}</div>
+                            ${addressLine}
+                            <div class="meal-meta">
+                                <span>💵 ${currencySymbol}${mealCost.toLocaleString()}</span>
+                                <span>${meal.specialty || ''}</span>
+                            </div>
+                            ${sourceLink}
+                        </div>
+                    `;
+                }).join('')
+                : '<div class="meal-card muted">Meals will be slotted once the operator confirms availability.</div>';
+
             html += `
                 <div class="day-card">
                     <div class="day-card-header">
@@ -353,8 +378,8 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
                         </div>
                         <div class="activity-cost" style="font-size: 20px;">${currencySymbol}${dayTotal.toLocaleString()}</div>
                     </div>
-                    
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+
+                    <div class="day-activities-grid">
                         <div>
                             <h4 style="margin-bottom: 10px; color: #4ECDC4;">🎯 Activities</h4>
                             ${dayPlan.activities.map(activity => {
@@ -372,23 +397,15 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
                                 `;
                             }).join('')}
                         </div>
-                        
-                        <div>
-                            <h4 style="margin-bottom: 10px; color: #4ECDC4;">🍽️ Meals</h4>
-                            ${dayPlan.meals.map(meal => {
-                                const mealCost = convertCurrency(meal.cost);
-                                return `
-                                    <div class="activity-item">
-                                        <div class="activity-time">${meal.time}</div>
-                                        <div class="activity-name">${meal.restaurant}</div>
-                                        <div class="activity-location">${meal.cuisine}</div>
-                                        <div style="margin-top: 8px;">
-                                            <div class="activity-cost">💵 ${currencySymbol}${mealCost.toLocaleString()}</div>
-                                            <div style="font-size: 13px; color: #666;">Specialty: ${meal.specialty}</div>
-                                        </div>
-                                    </div>
-                                `;
-                            }).join('')}
+                    </div>
+
+                    <div class="meal-section">
+                        <div class="meal-section-header">
+                            <h4>🍽️ Meal Track</h4>
+                            <span>${mealSource}</span>
+                        </div>
+                        <div class="meal-grid">
+                            ${mealsHtml}
                         </div>
                     </div>
                 </div>
@@ -995,7 +1012,7 @@ function renderPOIList(pois = []) {
     if (!poiListEl) return;
 
     if (!pois.length) {
-        poiListEl.innerHTML = '<p style="color:#666;">No recommended attractions from OpenTripMap.</p>';
+        poiListEl.innerHTML = '<p style="color:#666;">No recommended attractions from Geoapify.</p>';
         return;
     }
 
