@@ -34,6 +34,11 @@ A comprehensive AI-powered travel planning application with a modern web interfa
 - Door-to-door route preview via OpenRouteService
 - Clickable POI list that pans/zooms the live map
 
+✅ **Transport Pricing Intelligence**
+- Distance-aware train fare estimates for India-specific trips
+- Live international flight quotes via Kiwi Tequila API (with graceful fallbacks)
+- Automatic scaling for couples, families, or teams so costs stay accurate
+
 ## Setup Instructions
 
 ### 1. Install Dependencies
@@ -51,6 +56,7 @@ $env:TAVILY_API_KEY="your_tavily_api_key_here"
 $env:OPENTRIPMAP_API_KEY="your_opentripmap_key_here"   # for POIs
 $env:ORS_API_KEY="your_openrouteservice_key_here"      # for routing
 $env:GEOAPIFY_API_KEY="your_geoapify_key_here"         # for live autocomplete
+$env:TEQUILA_API_KEY="your_kiwi_tequila_key_here"      # for live flight quotes (optional)
 ```
 
 Or use `setx` for persistent variables:

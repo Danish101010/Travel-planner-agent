@@ -5,7 +5,12 @@ Production-ready deployment configuration
 
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
-from planner import planner_agent, budget_agent
+from planner import (
+    planner_agent,
+    budget_agent,
+    normalize_itinerary_costs,
+    normalize_budget_estimate,
+)
 from travel_data import (
     autocomplete_destination, 
     get_weather, 
@@ -16,11 +21,13 @@ from travel_data import (
     get_pois,
     get_route_directions
 )
+from transport_pricing import build_transport_pricing
 import os
 import traceback
 import logging
 from datetime import datetime
 import time
+import copy
 
 # Configuration
 class Config:
@@ -50,6 +57,154 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+_exchange_rate_cache = {}
+_travel_keywords = ('depart', 'departure', 'flight', 'train', 'transfer', 'journey', 'travel', 'transit')
+
+
+def _safe_int(value):
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _convert_to_usd(amount, currency):
+    amount = _safe_float(amount)
+    if amount <= 0:
+        return 0.0
+    currency_code = (currency or 'USD').upper()
+    if currency_code == 'USD':
+        return amount
+
+    rate = _exchange_rate_cache.get(currency_code)
+    if rate is None:
+        try:
+            payload = get_exchange_rate(currency_code, 'USD')
+            rate = _safe_float(payload.get('rate')) if payload else 1.0
+        except Exception as exc:
+            logger.warning('Exchange lookup failed for %s: %s', currency_code, exc)
+            rate = 1.0
+        _exchange_rate_cache[currency_code] = rate or 1.0
+    return amount * (rate or 1.0)
+
+
+def _quote_total_cost(quote, fallback_travelers):
+    if not isinstance(quote, dict):
+        return float('inf')
+    if quote.get('group_price') is not None:
+        return _safe_float(quote.get('group_price'))
+    per_person = _safe_float(quote.get('price_per_person'))
+    travelers = quote.get('travelers') or fallback_travelers or 1
+    return per_person * max(1, travelers)
+
+
+def _find_travel_day(schedule):
+    for day in schedule:
+        if not isinstance(day, dict):
+            continue
+        text_bits = [day.get('theme', ''), day.get('summary', '')]
+        for bucket in ('activities', 'meals'):
+            for entry in day.get(bucket, []) or []:
+                if isinstance(entry, dict):
+                    text_bits.append(entry.get('activity') or entry.get('restaurant') or '')
+                    text_bits.append(entry.get('description') or '')
+        blob = ' '.join(text_bits).lower()
+        if any(keyword in blob for keyword in _travel_keywords):
+            return day
+    return schedule[0] if schedule else None
+
+
+def _inject_transport_costs(itinerary, budget, transport_options):
+    quotes = (transport_options or {}).get('quotes') or []
+    if not itinerary or not isinstance(itinerary, dict) or not quotes:
+        return itinerary, budget, None
+
+    if not isinstance(budget, dict):
+        budget = {}
+
+    schedule = itinerary.get('itinerary') or []
+    if not isinstance(schedule, list) or not schedule:
+        return itinerary, budget, None
+
+    travelers = transport_options.get('travelers') or 1
+    best_quote = min(quotes, key=lambda q: _quote_total_cost(q, travelers), default=None)
+    if not best_quote:
+        return itinerary, budget, None
+
+    native_total = _quote_total_cost(best_quote, travelers)
+    usd_total = _convert_to_usd(native_total, best_quote.get('currency'))
+    if usd_total <= 0:
+        return itinerary, budget, None
+
+    target_day = _find_travel_day(schedule)
+    if not isinstance(target_day, dict):
+        target_day = schedule[0]
+    if not isinstance(target_day, dict):
+        return itinerary, budget, None
+
+    activities = target_day.get('activities')
+    if not isinstance(activities, list):
+        activities = []
+        target_day['activities'] = activities
+
+    route_label = '{src} -> {dest}'.format(
+        src=(transport_options.get('source') or {}).get('label') or 'Departure',
+        dest=(transport_options.get('destination') or {}).get('label') or 'Arrival'
+    )
+
+    mode_label = (best_quote.get('mode') or 'transport').replace('_', ' ').title()
+    provider_label = best_quote.get('provider') or best_quote.get('class_label') or 'Preferred Carrier'
+    confidence = (best_quote.get('confidence') or 'estimated').title()
+    local_currency = (best_quote.get('currency') or 'USD').upper()
+    entry_cost = _safe_int(round(usd_total))
+
+    transport_entry = {
+        'time': best_quote.get('departure') or '08:00',
+        'activity': f"{mode_label} via {provider_label}",
+        'location': route_label,
+        'cost': entry_cost,
+        'description': f"{mode_label} cost for {travelers} travelers ({local_currency} {int(round(native_total))}).",
+        'tip': best_quote.get('notes') or f"{confidence} fare injected automatically."
+    }
+
+    activities.insert(0, transport_entry)
+    target_day['total_cost'] = _safe_int(target_day.get('total_cost')) + entry_cost
+
+    breakdown = budget.setdefault('breakdown', {}) if isinstance(budget, dict) else {}
+    transport_bucket = breakdown.get('transport') if isinstance(breakdown, dict) else None
+    if not isinstance(transport_bucket, dict):
+        if isinstance(breakdown, dict):
+            transport_bucket = {}
+            breakdown['transport'] = transport_bucket
+        else:
+            breakdown = {'transport': {}}
+            budget['breakdown'] = breakdown
+            transport_bucket = breakdown['transport']
+    transport_bucket['estimated'] = _safe_int(transport_bucket.get('estimated')) + entry_cost
+
+    transport_summary = {
+        'quote_id': best_quote.get('id'),
+        'mode': best_quote.get('mode'),
+        'provider': provider_label,
+        'currency': local_currency,
+        'native_amount': round(native_total, 2),
+        'usd_amount': entry_cost,
+        'travel_day': target_day.get('day'),
+        'notes': best_quote.get('notes'),
+    }
+
+    itinerary.setdefault('meta', {})['transport_quote'] = transport_summary
+    budget.setdefault('meta', {})['transport_quote'] = transport_summary
+
+    return itinerary, budget, transport_summary
 
 
 # Error Handlers
@@ -149,6 +304,16 @@ def generate_itinerary():
         interests = data.get('interests', [])
         group = str(data.get('group', 'Solo')).strip()
         special_needs = str(data.get('special_needs', '')).strip()
+        try:
+            travelers = int(data.get('travelers') or 1)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid traveler count'}), 400
+        start_date = data.get('start_date')
+        source_details = data.get('source_details') or {}
+        destination_details = data.get('destination_details') or {}
+
+        source_details.setdefault('name', source)
+        destination_details.setdefault('name', destination)
 
         # Validate input constraints
         if not source:
@@ -161,21 +326,63 @@ def generate_itinerary():
             return jsonify({'success': False, 'error': 'Budget must be between 500 and 100000'}), 400
         if not isinstance(interests, list) or len(interests) == 0:
             return jsonify({'success': False, 'error': 'At least one interest must be selected'}), 400
+        if travelers < 1:
+            return jsonify({'success': False, 'error': 'Travelers must be at least 1'}), 400
+        if group.lower() != 'solo' and travelers < 2:
+            return jsonify({'success': False, 'error': 'Please provide the number of travelers for non-solo trips'}), 400
 
-        logger.info(f'Generating itinerary: {source} -> {destination} ({days} days, ${budget})')
+        logger.info(
+            'Generating itinerary: %s -> %s (%s days, $%s, %s travelers)',
+            source,
+            destination,
+            days,
+            budget,
+            travelers,
+        )
 
         # Generate itinerary
-        itinerary = planner_agent(destination, days, budget, style, interests, group, special_needs, source)
+        itinerary_raw = planner_agent(destination, days, budget, style, interests, group, special_needs, source, travelers)
+        if not itinerary_raw:
+            raise ValueError('Planner failed to return itinerary data')
+        itinerary = normalize_itinerary_costs(copy.deepcopy(itinerary_raw), budget, days)
         
         # Generate budget breakdown
-        budget_info = budget_agent(destination, days, budget, style, source)
+        budget_raw = budget_agent(destination, days, budget, style, source, travelers)
+        if not budget_raw:
+            raise ValueError('Budget agent failed to return data')
+        budget_info = normalize_budget_estimate(copy.deepcopy(budget_raw), budget, days)
+
+        transport_options = build_transport_pricing(
+            source_details=source_details,
+            destination_details=destination_details,
+            departure_date=start_date,
+            travelers=travelers,
+        )
+
+        itinerary, budget_info, transport_summary = _inject_transport_costs(
+            itinerary,
+            budget_info,
+            transport_options,
+        )
+        if transport_summary:
+            transport_options['applied_quote'] = transport_summary
 
         logger.info(f'Successfully generated itinerary for {destination}')
 
         return jsonify({
             'success': True,
             'itinerary': itinerary,
+            'itinerary_normalized': itinerary,
+            'itinerary_raw': itinerary_raw,
             'budget': budget_info,
+            'budget_normalized': budget_info,
+            'budget_raw': budget_raw,
+            'transport': transport_options,
+            'group': {
+                'type': group,
+                'travelers': travelers,
+                'start_date': start_date
+            },
             'timestamp': datetime.utcnow().isoformat()
         }), 200
 

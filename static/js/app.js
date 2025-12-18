@@ -2,8 +2,8 @@
 const API_URL = '/api';
 
 // State for autocomplete results and selected destination
-let destinationCoords = { lat: 0, lon: 0, country: '' };
-let sourceCoords = { lat: 0, lon: 0, country: '' };
+let destinationCoords = { lat: 0, lon: 0, country: '', state: '', name: '', display_name: '' };
+let sourceCoords = { lat: 0, lon: 0, country: '', state: '', name: '', display_name: '' };
 let mapInstance = null;
 let markerLayer = null;
 let routeLayer = null;
@@ -18,16 +18,22 @@ const errorMessage = document.getElementById('errorMessage');
 const tabButtons = document.querySelectorAll('.tab-button');
 const destinationInput = document.getElementById('destination');
 const sourceInput = document.getElementById('source');
+const groupSelect = document.getElementById('group');
 const mapLayout = document.getElementById('mapLayout');
 const mapEmptyState = document.getElementById('mapEmptyState');
 const poiListEl = document.getElementById('poiList');
 const routeSummaryEl = document.getElementById('routeSummary');
+const travelersInput = document.getElementById('travelers');
+const startDateInput = document.getElementById('start_date');
 
 // Event Listeners
 form.addEventListener('submit', handleFormSubmit);
 tabButtons.forEach(button => {
     button.addEventListener('click', handleTabClick);
 });
+if (groupSelect) {
+    groupSelect.addEventListener('change', handleGroupChange);
+}
 
 // Autocomplete listeners
 destinationInput.addEventListener('input', debounce(handleDestinationInput, 300));
@@ -59,6 +65,15 @@ async function handleFormSubmit(e) {
     showLoading(true);
     hideError();
 
+    const travelers = Math.max(1, parseInt(travelersInput ? travelersInput.value : '1', 10) || 1);
+    const startDate = startDateInput ? startDateInput.value : '';
+
+    if (group !== 'Solo' && travelers < 2) {
+        showError('Please share how many travelers are in your group.');
+        showLoading(false);
+        return;
+    }
+
     try {
         // Fetch weather, timezone, country info, and advisory if destination has coordinates
         let weatherData = null;
@@ -66,10 +81,13 @@ async function handleFormSubmit(e) {
         let countryInfo = null;
         let travelAdvisory = null;
         let exchangeRate = null;
-        
-        console.log('=== STARTING FORM SUBMISSION ===');
-        console.log('destinationCoords:', destinationCoords);
-        
+
+        const resolvedDestinationCoords = await ensureCoords(destination, destinationCoords);
+        const resolvedSourceCoords = await ensureCoords(source, sourceCoords);
+
+        destinationCoords = resolvedDestinationCoords;
+        sourceCoords = resolvedSourceCoords;
+
         if (destinationCoords.lat && destinationCoords.lon) {
             console.log('Coords valid, fetching extended data...');
             try {
@@ -94,48 +112,30 @@ async function handleFormSubmit(e) {
                         })
                     })
                 ]);
-                
+
                 if (weatherResp.ok) weatherData = await weatherResp.json();
                 if (tzResp.ok) timezoneData = await tzResp.json();
 
-                // Debug: Log destination coords
-                console.log('Destination coords:', destinationCoords);
-                console.log('Country for API call:', destinationCoords.country || destination);
-
-                // Fetch country info - use country field from coords, fallback to destination name
                 const countryName = destinationCoords.country || (timezoneData && timezoneData.countryName) || destination;
-                console.log('Fetching country info for:', countryName);
-                
                 const countryResp = await fetch(`${API_URL}/country-info?country=${encodeURIComponent(countryName)}`);
-                console.log('Country info response status:', countryResp.status);
-                
                 if (countryResp.ok) {
                     countryInfo = await countryResp.json();
-                    console.log('Country info received:', countryInfo);
-                    
-                    // If we have country info, fetch travel advisory and exchange rate
+
                     if (countryInfo && countryInfo.country_code) {
-                        console.log('Fetching advisory and exchange rate...');
                         const [advisoryResp, rateResp] = await Promise.all([
                             fetch(`${API_URL}/travel-advisory?country=${countryInfo.country_code}`),
-                            countryInfo.currency_code && countryInfo.currency_code !== 'USD' 
+                            countryInfo.currency_code && countryInfo.currency_code !== 'USD'
                                 ? fetch(`${API_URL}/exchange-rate?from=USD&to=${countryInfo.currency_code}`)
                                 : Promise.resolve({ ok: false })
                         ]);
-                        
+
                         if (advisoryResp.ok) {
                             travelAdvisory = await advisoryResp.json();
-                            console.log('Travel advisory received:', travelAdvisory);
                         }
                         if (rateResp.ok) {
                             exchangeRate = await rateResp.json();
-                            console.log('Exchange rate received:', exchangeRate);
                         }
-                    } else {
-                        console.warn('Country info missing country_code:', countryInfo);
                     }
-                } else {
-                    console.error('Country info fetch failed:', countryResp.status, await countryResp.text());
                 }
             } catch (e) {
                 console.error('Extended data fetch failed:', e);
@@ -146,11 +146,9 @@ async function handleFormSubmit(e) {
         if (!countryInfo) {
             try {
                 const fallbackCountryName = destinationCoords.country || destination;
-                console.log('Fallback fetching country info for:', fallbackCountryName);
                 const countryResp2 = await fetch(`${API_URL}/country-info?country=${encodeURIComponent(fallbackCountryName)}`);
                 if (countryResp2.ok) {
                     countryInfo = await countryResp2.json();
-                    console.log('Country info (fallback) received:', countryInfo);
 
                     if (countryInfo && countryInfo.country_code) {
                         const [advisoryResp2, rateResp2] = await Promise.all([
@@ -162,15 +160,12 @@ async function handleFormSubmit(e) {
 
                         if (advisoryResp2.ok) {
                             travelAdvisory = await advisoryResp2.json();
-                            console.log('Travel advisory (fallback) received:', travelAdvisory);
                         }
                         if (rateResp2.ok) {
                             exchangeRate = await rateResp2.json();
-                            console.log('Exchange rate (fallback) received:', exchangeRate);
                         }
                     }
                 } else {
-                    console.warn('Fallback country info fetch failed:', countryResp2.status);
                     // Try resolving country via autocomplete when user typed a city
                     try {
                         const acResp = await fetch(`${API_URL}/autocomplete?q=${encodeURIComponent(destination)}`);
@@ -179,11 +174,9 @@ async function handleFormSubmit(e) {
                             const first = Array.isArray(suggestions) ? suggestions[0] : null;
                             const autoCountry = first && (first.country || first.display_name || '').split(',').pop().trim();
                             if (autoCountry) {
-                                console.log('Autocomplete-derived country:', autoCountry);
                                 const countryResp3 = await fetch(`${API_URL}/country-info?country=${encodeURIComponent(autoCountry)}`);
                                 if (countryResp3.ok) {
                                     countryInfo = await countryResp3.json();
-                                    console.log('Country info (autocomplete) received:', countryInfo);
                                     if (countryInfo && countryInfo.country_code) {
                                         const [advisoryResp3, rateResp3] = await Promise.all([
                                             fetch(`${API_URL}/travel-advisory?country=${countryInfo.country_code}`),
@@ -193,19 +186,13 @@ async function handleFormSubmit(e) {
                                         ]);
                                         if (advisoryResp3.ok) {
                                             travelAdvisory = await advisoryResp3.json();
-                                            console.log('Travel advisory (autocomplete) received:', travelAdvisory);
                                         }
                                         if (rateResp3.ok) {
                                             exchangeRate = await rateResp3.json();
-                                            console.log('Exchange rate (autocomplete) received:', exchangeRate);
                                         }
                                     }
-                                } else {
-                                    console.warn('Country info (autocomplete) fetch failed:', countryResp3.status);
                                 }
                             }
-                        } else {
-                            console.warn('Autocomplete request failed:', acResp.status);
                         }
                     } catch (e2) {
                         console.warn('Autocomplete fallback failed:', e2);
@@ -230,7 +217,11 @@ async function handleFormSubmit(e) {
                 style,
                 group,
                 interests,
+                travelers,
+                start_date: startDate,
                 special_needs: specialNeeds,
+                source_details: sourceCoords,
+                destination_details: destinationCoords,
                 weather: weatherData,
                 timezone: timezoneData
             })
@@ -243,21 +234,21 @@ async function handleFormSubmit(e) {
         const data = await response.json();
 
         if (data.success) {
-            const resolvedDestinationCoords = await ensureCoords(destination, destinationCoords);
-            const resolvedSourceCoords = await ensureCoords(source, sourceCoords);
-
-            destinationCoords = resolvedDestinationCoords;
-            sourceCoords = resolvedSourceCoords;
+            const itineraryPayload = data.itinerary_normalized || data.itinerary;
+            const budgetPayload = data.budget_normalized || data.budget;
+            const groupContext = data.group || { type: group, travelers };
+            const transportOptions = data.transport || null;
+            const startDateValue = (groupContext && groupContext.start_date) || startDate;
 
             routeErrorMessage = '';
 
-            const poiPromise = resolvedDestinationCoords.lat && resolvedDestinationCoords.lon
-                ? fetchPOIData(resolvedDestinationCoords, interests)
+            const poiPromise = destinationCoords.lat && destinationCoords.lon
+                ? fetchPOIData(destinationCoords, interests)
                 : Promise.resolve([]);
 
             let routePromise;
-            if (resolvedDestinationCoords.lat && resolvedDestinationCoords.lon && resolvedSourceCoords.lat && resolvedSourceCoords.lon) {
-                routePromise = fetchRouteData(resolvedSourceCoords, resolvedDestinationCoords).catch(err => {
+            if (destinationCoords.lat && destinationCoords.lon && sourceCoords.lat && sourceCoords.lon) {
+                routePromise = fetchRouteData(sourceCoords, destinationCoords).catch(err => {
                     routeErrorMessage = err.message || 'Route unavailable';
                     return null;
                 });
@@ -271,8 +262,8 @@ async function handleFormSubmit(e) {
             ]);
 
             displayResults(
-                data.itinerary,
-                data.budget,
+                itineraryPayload,
+                budgetPayload,
                 source,
                 destination,
                 days,
@@ -287,8 +278,11 @@ async function handleFormSubmit(e) {
                 exchangeRate,
                 poiData,
                 routeData,
-                resolvedSourceCoords,
-                resolvedDestinationCoords
+                sourceCoords,
+                destinationCoords,
+                transportOptions,
+                groupContext,
+                startDateValue
             );
 
             resultsSection.classList.remove('hidden');
@@ -305,11 +299,13 @@ async function handleFormSubmit(e) {
 }
 
 // Display Results
-function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, poiData = [], routeData = null, resolvedSourceCoords = null, resolvedDestinationCoords = null) {
+function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, poiData = [], routeData = null, resolvedSourceCoords = null, resolvedDestinationCoords = null, transport = null, groupContext = null, startDate = '') {
     // Use local currency if available, otherwise USD
     let currencySymbol = '$';
     let currencyCode = 'USD';
     let exchangeRateValue = 1; // Default 1:1 for USD
+    const travelersCount = (groupContext && groupContext.travelers) || 1;
+    const groupLabel = (groupContext && groupContext.type) || group;
     
     if (countryInfo && countryInfo.currency_symbol && countryInfo.currency_code) {
         currencySymbol = countryInfo.currency_symbol;
@@ -321,19 +317,20 @@ function displayResults(itinerary, budget, source, destination, days, budgetAmou
         }
     }
 
-    displayItinerary(itinerary, destination, days, currencySymbol, currencyCode, exchangeRateValue);
-    displayBudget(budget, budgetAmount, currencySymbol, currencyCode, exchangeRateValue);
+    displayItinerary(itinerary, destination, days, currencySymbol, currencyCode, exchangeRateValue, travelersCount);
+    displayBudget(budget, budgetAmount, currencySymbol, currencyCode, exchangeRateValue, travelersCount);
     displayRecommendations(itinerary, budget);
-    displayOverview(source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate);
+    displayOverview(source, destination, days, budgetAmount, style, groupLabel, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, transport, { travelers: travelersCount, startDate });
     displayMapAndPois(routeData, poiData, resolvedSourceCoords, resolvedDestinationCoords);
 }
 
 // Display Itinerary Tab
-function displayItinerary(itinerary, destination, days, currencySymbol = '$', currencyCode = 'USD', exchangeRate = 1) {
+function displayItinerary(itinerary, destination, days, currencySymbol = '$', currencyCode = 'USD', exchangeRate = 1, travelers = 1) {
     const title = document.getElementById('itineraryTitle');
     const content = document.getElementById('itineraryContent');
 
-    title.textContent = `Your ${days}-Day Itinerary in ${destination}`;
+    const groupNote = travelers > 1 ? `<span class="itinerary-subtitle">Costs for ${travelers} travelers</span>` : '';
+    title.innerHTML = `Your ${days}-Day Itinerary in ${destination} ${groupNote}`;
 
     // Helper function to convert and format currency
     const convertCurrency = (usdAmount) => {
@@ -403,7 +400,7 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
 }
 
 // Display Budget Tab
-function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = '', exchangeRate = 1) {
+function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = '', exchangeRate = 1, travelers = 1) {
     const content = document.getElementById('budgetContent');
 
     if (!budget.breakdown) {
@@ -423,6 +420,10 @@ function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = 
     const activities = breakdown.activities || {};
     const transport = breakdown.transport || {};
     const contingency = breakdown.contingency || {};
+
+    const perTravelerMeta = budget.group_metadata || {};
+    const perTravelerTotal = perTravelerMeta.per_traveler_total || Math.round((budget.total_budget || totalBudget) / Math.max(travelers, 1));
+    const perTravelerDaily = perTravelerMeta.per_traveler_daily || Math.round((budget.daily_budget || 0) / Math.max(travelers, 1));
 
     let html = `
         <div class="budget-metrics">
@@ -455,8 +456,9 @@ function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = 
 
         <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 30px; border-radius: 8px; text-align: center; margin-top: 20px;">
             <div style="font-size: 18px; margin-bottom: 10px;">Total Budget</div>
-            <div style="font-size: 36px; font-weight: bold; margin-bottom: 10px;">${currencySymbol}${convertCurrency(budget.total_budget || totalBudget)}</div>
-            <div style="font-size: 16px;">Daily Budget: ${currencySymbol}${convertCurrency(budget.daily_budget || 0)}</div>
+            <div style="font-size: 36px; font-weight: bold; margin-bottom: 10px;">${currencySymbol}${convertCurrency(budget.total_budget || totalBudget)} <span style="font-size:16px; font-weight:400;">for ${travelers} traveler${travelers > 1 ? 's' : ''}</span></div>
+            <div style="font-size: 16px;">Group Daily Budget: ${currencySymbol}${convertCurrency(budget.daily_budget || 0)}</div>
+            <div style="font-size: 14px; margin-top: 8px; opacity: 0.9;">Per Traveler: ${currencySymbol}${convertCurrency(perTravelerTotal)} total • ${currencySymbol}${convertCurrency(perTravelerDaily)} / day</div>
         </div>
     `;
 
@@ -540,10 +542,12 @@ function displayRecommendations(itinerary, budget) {
 }
 
 // Display Overview Tab
-function displayOverview(source, destination, days, budget, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate) {
+function displayOverview(source, destination, days, budget, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, transport = null, groupContext = null) {
     const content = document.getElementById('overviewContent');
 
     const interestsText = interests.join(', ') || 'Various';
+    const travelerCount = (groupContext && groupContext.travelers) || 1;
+    const tripStart = (groupContext && groupContext.startDate) || '';
 
     // Build country info section
     let countrySection = '';
@@ -653,6 +657,8 @@ function displayOverview(source, destination, days, budget, style, group, intere
         `;
     }
 
+    const transportSection = renderTransportSection(transport, travelerCount);
+
     const html = `
         <div class="overview-grid">
             <div class="overview-card">
@@ -680,6 +686,16 @@ function displayOverview(source, destination, days, budget, style, group, intere
                 <div class="overview-value">${group}</div>
             </div>
             <div class="overview-card">
+                <div class="overview-label">🧍 Travelers</div>
+                <div class="overview-value">${travelerCount}</div>
+                <div class="overview-subtext">Group pricing applied</div>
+            </div>
+            ${tripStart ? `
+            <div class="overview-card">
+                <div class="overview-label">🛫 Target Start</div>
+                <div class="overview-value">${tripStart}</div>
+            </div>` : ''}
+            <div class="overview-card">
                 <div class="overview-label">❤️ Interests</div>
                 <div class="overview-value" style="font-size: 16px;">${interestsText}</div>
             </div>
@@ -687,11 +703,67 @@ function displayOverview(source, destination, days, budget, style, group, intere
         ${countrySection}
         ${advisorySection}
         ${currencySection}
+        ${transportSection}
         ${weatherSection}
         ${timezoneSection}
     `;
 
     content.innerHTML = html;
+}
+
+function renderTransportSection(transport, travelers = 1) {
+    if (!transport || !Array.isArray(transport.quotes) || !transport.quotes.length) {
+        return '';
+    }
+
+    const title = transport.trip_type === 'india_train'
+        ? '🚆 Train Fare Snapshot'
+        : '✈️ Flight Price Snapshot';
+
+    const distanceInfo = transport.distance_km
+        ? `<span class="transport-distance">${(transport.distance_km).toLocaleString()} km route</span>`
+        : '';
+
+    const quoteCards = transport.quotes.slice(0, 3).map(quote => {
+        const confidence = quote.confidence === 'live' ? 'Live quote' : 'Estimated';
+        const notes = quote.notes || '';
+        const perPerson = Math.max(0, Number(quote.price_per_person) || 0);
+        const groupTotal = Math.max(0, Number(quote.group_price) || perPerson * travelers);
+        const bookingButton = quote.booking_url
+            ? `<a class="transport-link" href="${quote.booking_url}" target="_blank" rel="noopener">Book option</a>`
+            : '';
+        return `
+            <div class="transport-card">
+                <div class="transport-card-header">
+                    <div>
+                        <div class="transport-provider">${quote.provider || 'Option'}</div>
+                        ${quote.class_label || quote.class ? `<div class="transport-class">${quote.class_label || quote.class}</div>` : ''}
+                    </div>
+                    <div class="transport-price">${quote.currency || ''} ${Math.round(perPerson).toLocaleString()}<span>per traveler</span></div>
+                </div>
+                <div class="transport-body">
+                    <div>Group total (${travelers}): <strong>${quote.currency || ''} ${Math.round(groupTotal).toLocaleString()}</strong></div>
+                    ${quote.duration_hours ? `<div>Duration: ~${quote.duration_hours}h</div>` : ''}
+                    ${quote.stops !== undefined ? `<div>Stops: ${quote.stops}</div>` : ''}
+                    <div class="transport-confidence">${confidence}</div>
+                    ${notes ? `<p class="transport-note">${notes}</p>` : ''}
+                </div>
+                ${bookingButton}
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="transport-section">
+            <div class="transport-header">
+                <h3>${title}</h3>
+                ${distanceInfo}
+            </div>
+            <div class="transport-grid">
+                ${quoteCards}
+            </div>
+        </div>
+    `;
 }
 
 function displayMapAndPois(routeData, poiData, sourceCoords, destinationCoords) {
@@ -771,26 +843,29 @@ async function ensureCoords(label, cachedCoords) {
     }
 
     if (!label) {
-        return { lat: 0, lon: 0, country: '' };
+        return { lat: 0, lon: 0, country: '', state: '', name: '', display_name: '' };
     }
 
     try {
         const response = await fetch(`${API_URL}/autocomplete?q=${encodeURIComponent(label)}`);
-        if (!response.ok) return { lat: 0, lon: 0, country: '' };
+        if (!response.ok) return { lat: 0, lon: 0, country: '', state: '', name: label, display_name: label };
         const suggestions = await response.json();
         if (Array.isArray(suggestions) && suggestions.length > 0) {
             const first = suggestions[0];
             return {
                 lat: parseFloat(first.lat) || 0,
                 lon: parseFloat(first.lon) || 0,
-                country: first.country || ''
+                country: first.country || '',
+                state: first.state || '',
+                name: first.name || label,
+                display_name: first.display_name || first.name || label
             };
         }
     } catch (err) {
         console.warn('Failed to resolve coordinates', err);
     }
 
-    return { lat: 0, lon: 0, country: '' };
+    return { lat: 0, lon: 0, country: '', state: '', name: label, display_name: label };
 }
 
 function mapInterestsToKinds(interests) {
@@ -1050,6 +1125,22 @@ async function handleDestinationInput(e) {
     }
 }
 
+function handleGroupChange() {
+    if (!travelersInput) return;
+    const isSolo = groupSelect && groupSelect.value === 'Solo';
+    if (isSolo) {
+        travelersInput.value = 1;
+        travelersInput.setAttribute('disabled', 'disabled');
+        travelersInput.classList.add('input-disabled');
+    } else {
+        travelersInput.removeAttribute('disabled');
+        travelersInput.classList.remove('input-disabled');
+        if (Number(travelersInput.value || '0') < 2) {
+            travelersInput.value = 2;
+        }
+    }
+}
+
 // Handle source input with autocomplete
 async function handleSourceInput(e) {
     const query = e.target.value.trim();
@@ -1088,7 +1179,7 @@ function renderAutocompleteDropdown(inputId, suggestions) {
     }
 
     dropdown.innerHTML = suggestions.map((suggestion, index) => `
-        <div class="autocomplete-item" data-index="${index}" data-lat="${suggestion.lat}" data-lon="${suggestion.lon}" data-name="${suggestion.name}" data-country="${suggestion.country || ''}">
+        <div class="autocomplete-item" data-index="${index}" data-lat="${suggestion.lat}" data-lon="${suggestion.lon}" data-name="${suggestion.name}" data-country="${suggestion.country || ''}" data-state="${suggestion.state || ''}" data-display="${suggestion.display_name || ''}">
             <div class="autocomplete-name">${suggestion.name}</div>
             <div class="autocomplete-country">${suggestion.display_name || suggestion.country || ''}</div>
         </div>
@@ -1101,14 +1192,16 @@ function renderAutocompleteDropdown(inputId, suggestions) {
             const lon = parseFloat(item.dataset.lon);
             const name = item.dataset.name;
             const country = item.dataset.country;
+            const state = item.dataset.state;
+            const displayName = item.dataset.display;
 
             if (inputId === 'destination') {
                 document.getElementById('destination').value = name;
-                destinationCoords = { lat, lon, country };
+                destinationCoords = { lat, lon, country, state, name, display_name: displayName || name };
                 hideAutocompleteDropdown('destination');
             } else {
                 document.getElementById('source').value = name;
-                sourceCoords = { lat, lon, country };
+                sourceCoords = { lat, lon, country, state, name, display_name: displayName || name };
                 hideAutocompleteDropdown('source');
             }
         });
@@ -1152,4 +1245,5 @@ function getWeatherIcon(weatherCode) {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     console.log('Travel Planner App Loaded');
+    handleGroupChange();
 });
