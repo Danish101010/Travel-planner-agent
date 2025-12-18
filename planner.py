@@ -10,10 +10,73 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 MODEL = genai.GenerativeModel("gemma-3-4b-it")
 
 
+def _parse_json_safe(text: str):
+    """Attempt to parse potentially noisy JSON from model output."""
+    if not text:
+        raise ValueError("Empty model response")
+
+    # Remove code fences if present
+    if text.startswith("```"):
+        text = text.replace("```json", "").replace("```", "").strip()
+
+    # First attempt
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try slicing from first { to last }
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start != -1 and end > start:
+        sliced = text[start:end]
+        try:
+            return json.loads(sliced)
+        except json.JSONDecodeError:
+            text = sliced
+
+    # Remove trailing commas before } or ]
+    cleaned = re.sub(r",\s*([}\]])", r"\1", text)
+    
+    # Remove duplicate commas
+    cleaned = re.sub(r",\s*,", ",", cleaned)
+    
+    # Fix ALL number ranges (e.g., "3500 - 4500" or "6-8") -> use midpoint
+    # Handles ranges in any numeric context
+    def replace_range_with_midpoint(match):
+        try:
+            num_str = match.group(0)
+            # Extract numbers from patterns like "3500 - 4500" or "6-8"
+            numbers = re.findall(r'\d+', num_str)
+            if len(numbers) >= 2:
+                avg = sum(int(n) for n in numbers[:2]) // 2
+                return str(avg)
+        except:
+            pass
+        return match.group(0)
+    
+    # Replace all numeric ranges with their midpoint
+    cleaned = re.sub(r'\d+\s*-\s*\d+', replace_range_with_midpoint, cleaned)
+    
+    # Remove unescaped newlines inside string values
+    cleaned = re.sub(r':\s*"([^"]*)\n([^"]*)"', lambda m: f': "{m.group(1)} {m.group(2)}"', cleaned)
+    
+    # Try to parse cleaned version
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        # Log snippet around error for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"JSON parse failed at char {e.pos}: {cleaned[max(0, e.pos-50):e.pos+50]}")
+        raise
+
+
 ITINERARY_PROMPT = """
 You are an expert travel planner creating a comprehensive day-by-day itinerary.
 
 INPUT:
+- Source (departure city): {source}
 - Destination: {destination}
 - Days: {days}
 - Budget: ${budget}
@@ -39,6 +102,9 @@ RULES:
 - Include realistic activity times
 - Add backup options for rainy days
 - Consider travel time between locations
+- CRITICAL: Use ONLY single integer values for all numeric fields (never ranges like "6-8" or "3500 - 4500")
+- CRITICAL: All numbers must be valid JSON integers (e.g., 3500, not "3500 - 4500")
+- Ensure all string values are properly closed and contain no unescaped newlines
 
 Format:
 {{
@@ -88,12 +154,14 @@ Destination: {destination}
 Days: {days}
 Budget: ${budget}
 Travel Style: {style}
+Source (departure city): {source}
 
 Output ONLY valid JSON with:
 - Daily budget limits
 - Cost per category (accommodation, food, activities, transport)
 - Money saving tips specific to this destination
 - Estimated total with breakdown
+- CRITICAL: Use ONLY single integer values (never ranges like "3500 - 4500", use exact numbers like 3800)
 
 Format:
 {{
@@ -111,11 +179,12 @@ Format:
 """
 
 
-def planner_agent(destination: str, days: int, budget: float, style: str, 
-                  interests: list, group: str, special_needs: str):
+def planner_agent(destination: str, days: int, budget: float, style: str,
+                  interests: list, group: str, special_needs: str, source: str):
     """Generate comprehensive travel itinerary"""
     
     prompt = ITINERARY_PROMPT.format(
+        source=source,
         destination=destination,
         days=days,
         budget=budget,
@@ -127,66 +196,40 @@ def planner_agent(destination: str, days: int, budget: float, style: str,
 
     max_retries = 3
     for attempt in range(max_retries):
-      try:
-        response = MODEL.generate_content(prompt)
-        text = (response.text or "").strip()
-
-        # quick cleanup for occasional code fences
-        if text.startswith("```"):
-          text = text.replace("```json", "").replace("```", "").strip()
-
-        # Try direct JSON parse first
         try:
-          return json.loads(text)
-        except json.JSONDecodeError:
-          # Fallback: slice first to last brace
-          start = text.find("{")
-          end = text.rfind("}") + 1
-          if start != -1 and end > start:
-            cleaned = text[start:end]
-            return json.loads(cleaned)
-          raise
-      except Exception as e:
-        if "429" in str(e) and attempt < max_retries - 1:
-          wait_time = 15 * (attempt + 1)
-          print(f"Rate limit hit. Waiting {wait_time} seconds...")
-          time.sleep(wait_time)
-        else:
-          raise
+          response = MODEL.generate_content(prompt)
+          text = (response.text or "").strip()
+          return _parse_json_safe(text)
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                wait_time = 15 * (attempt + 1)
+                print(f"Rate limit hit. Waiting {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                raise
 
 
-def budget_agent(destination: str, days: int, budget: float, style: str):
+def budget_agent(destination: str, days: int, budget: float, style: str, source: str):
     """Generate detailed budget breakdown"""
     
     prompt = BUDGET_PROMPT.format(
         destination=destination,
         days=days,
         budget=budget,
-        style=style
+        style=style,
+        source=source
     )
 
     max_retries = 3
     for attempt in range(max_retries):
-      try:
-        response = MODEL.generate_content(prompt)
-        text = (response.text or "").strip()
-
-        if text.startswith("```"):
-          text = text.replace("```json", "").replace("```", "").strip()
-
         try:
-          return json.loads(text)
-        except json.JSONDecodeError:
-          start = text.find("{")
-          end = text.rfind("}") + 1
-          if start != -1 and end > start:
-            cleaned = text[start:end]
-            return json.loads(cleaned)
-          raise
-      except Exception as e:
-        if "429" in str(e) and attempt < max_retries - 1:
-          wait_time = 15 * (attempt + 1)
-          print(f"Rate limit hit. Waiting {wait_time} seconds...")
-          time.sleep(wait_time)
-        else:
-          raise
+          response = MODEL.generate_content(prompt)
+          text = (response.text or "").strip()
+          return _parse_json_safe(text)
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                wait_time = 15 * (attempt + 1)
+                print(f"Rate limit hit. Waiting {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                raise

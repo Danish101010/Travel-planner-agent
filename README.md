@@ -75,6 +75,8 @@ python api.py
 
 Open http://127.0.0.1:5000 in your browser.
 
+4) Provide both Source (departure city) and Destination in the form; the planner will factor the source into itinerary context and budget/transport notes.
+
 ## What’s Included
 
 - `api.py`: Flask server and endpoints

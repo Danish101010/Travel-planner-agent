@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>✈️ Smart Travel Planner</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ cache_buster }}">
 </head>
 <body>
     <nav class="navbar">
@@ -29,8 +29,18 @@
                 <form id="plannerForm">
                     <div class="form-row">
                         <div class="form-group">
+                            <label for="source">🏠 Source City</label>
+                            <div style="position: relative;">
+                                <input type="text" id="source" name="source" value="New York" required>
+                                <div id="sourceSuggestions" class="autocomplete-dropdown hidden"></div>
+                            </div>
+                        </div>
+                        <div class="form-group">
                             <label for="destination">🌍 Destination</label>
-                            <input type="text" id="destination" name="destination" value="Tokyo" required>
+                            <div style="position: relative;">
+                                <input type="text" id="destination" name="destination" value="Tokyo" required>
+                                <div id="destinationSuggestions" class="autocomplete-dropdown hidden"></div>
+                            </div>
                         </div>
                         <div class="form-group">
                             <label for="days">📅 Number of Days</label>
@@ -168,6 +178,6 @@
         <p>&copy; 2024 Smart Travel Planner. Plan your adventures with AI.</p>
     </footer>
 
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ cache_buster }}"></script>
 </body>
 </html>

@@ -6,10 +6,19 @@ Production-ready deployment configuration
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from planner import planner_agent, budget_agent
+from travel_data import (
+    autocomplete_destination, 
+    get_weather, 
+    get_timezone, 
+    get_country_info,
+    get_travel_advisory,
+    get_exchange_rate
+)
 import os
 import traceback
 import logging
 from datetime import datetime
+import time
 
 # Configuration
 class Config:
@@ -91,7 +100,8 @@ def log_response(response):
 def index():
     """Serve the main page"""
     try:
-        return render_template('index.html')
+        # Cache-buster timestamp to force fresh static asset loads
+        return render_template('index.html', cache_buster=int(time.time()))
     except Exception as e:
         logger.error(f'Error serving index: {str(e)}')
         return jsonify({'error': 'Failed to load application'}), 500
@@ -120,7 +130,7 @@ def generate_itinerary():
         data = request.json
         
         # Validate required fields
-        required_fields = ['destination', 'days', 'budget', 'style', 'interests', 'group']
+        required_fields = ['source', 'destination', 'days', 'budget', 'style', 'interests', 'group']
         for field in required_fields:
             if field not in data:
                 return jsonify({
@@ -129,6 +139,7 @@ def generate_itinerary():
                 }), 400
 
         # Parse and validate input
+        source = str(data.get('source', '')).strip()
         destination = str(data.get('destination', '')).strip()
         days = int(data.get('days', 5))
         budget = float(data.get('budget', 3000))
@@ -138,6 +149,8 @@ def generate_itinerary():
         special_needs = str(data.get('special_needs', '')).strip()
 
         # Validate input constraints
+        if not source:
+            return jsonify({'success': False, 'error': 'Source cannot be empty'}), 400
         if not destination:
             return jsonify({'success': False, 'error': 'Destination cannot be empty'}), 400
         if days < 1 or days > 30:
@@ -147,13 +160,13 @@ def generate_itinerary():
         if not isinstance(interests, list) or len(interests) == 0:
             return jsonify({'success': False, 'error': 'At least one interest must be selected'}), 400
 
-        logger.info(f'Generating itinerary: {destination} ({days} days, ${budget})')
+        logger.info(f'Generating itinerary: {source} -> {destination} ({days} days, ${budget})')
 
         # Generate itinerary
-        itinerary = planner_agent(destination, days, budget, style, interests, group, special_needs)
+        itinerary = planner_agent(destination, days, budget, style, interests, group, special_needs, source)
         
         # Generate budget breakdown
-        budget_info = budget_agent(destination, days, budget, style)
+        budget_info = budget_agent(destination, days, budget, style, source)
 
         logger.info(f'Successfully generated itinerary for {destination}')
 
@@ -237,6 +250,127 @@ def get_groups():
     """Get available group types"""
     groups = ["Solo", "Couple", "Family", "Friends Group", "Corporate"]
     return jsonify(groups)
+
+
+@app.route('/api/autocomplete', methods=['GET'])
+def api_autocomplete():
+    """Autocomplete destination using free Nominatim API"""
+    query = request.args.get('q', '').strip()
+    if len(query) < 2:
+        return jsonify([]), 200
+    
+    try:
+        results = autocomplete_destination(query)
+        logger.info(f"Autocomplete: {query} -> {len(results)} results")
+        return jsonify(results), 200
+    except Exception as e:
+        logger.error(f"Autocomplete error: {str(e)}")
+        return jsonify({'error': 'Autocomplete service unavailable'}), 500
+
+
+@app.route('/api/weather', methods=['POST'])
+def api_weather():
+    """Get weather forecast for destination"""
+    try:
+        data = request.json
+        destination = data.get('destination', '').strip()
+        lat = float(data.get('lat', 0))
+        lon = float(data.get('lon', 0))
+        days = int(data.get('days', 7))
+
+        if not destination or lat == 0 or lon == 0:
+            return jsonify({'error': 'Missing destination or coordinates'}), 400
+
+        weather = get_weather(destination, lat, lon, days)
+        if not weather:
+            return jsonify({'error': 'Weather service unavailable'}), 500
+
+        logger.info(f"Weather fetched for {destination}")
+        return jsonify(weather), 200
+    except Exception as e:
+        logger.error(f"Weather API error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch weather'}), 500
+
+
+@app.route('/api/timezone', methods=['POST'])
+def api_timezone():
+    """Get timezone for coordinates"""
+    try:
+        data = request.json
+        lat = float(data.get('lat', 0))
+        lon = float(data.get('lon', 0))
+
+        if lat == 0 or lon == 0:
+            return jsonify({'error': 'Missing coordinates'}), 400
+
+        tz = get_timezone(lat, lon)
+        if not tz:
+            return jsonify({'error': 'Timezone service unavailable'}), 500
+
+        logger.info(f"Timezone fetched for {lat},{lon}: {tz['timezone']}")
+        return jsonify(tz), 200
+    except Exception as e:
+        logger.error(f"Timezone API error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch timezone'}), 500
+
+
+@app.route('/api/travel-advisory', methods=['GET'])
+def api_travel_advisory():
+    """Get travel advisory for a country"""
+    try:
+        country_code = request.args.get('country', '').strip().upper()
+        if not country_code or len(country_code) != 2:
+            return jsonify({'error': 'Invalid country code (must be 2-letter ISO code)'}), 400
+
+        advisory = get_travel_advisory(country_code)
+        if not advisory:
+            return jsonify({'error': 'Advisory not available for this country'}), 404
+
+        logger.info(f"Travel advisory fetched for {country_code}: {advisory.get('level')}")
+        return jsonify(advisory), 200
+    except Exception as e:
+        logger.error(f"Travel advisory error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch advisory'}), 500
+
+
+@app.route('/api/country-info', methods=['GET'])
+def api_country_info():
+    """Get country information including currency"""
+    try:
+        country_name = request.args.get('country', '').strip()
+        if not country_name:
+            return jsonify({'error': 'Missing country name'}), 400
+
+        country_info = get_country_info(country_name)
+        if not country_info:
+            return jsonify({'error': 'Country not found'}), 404
+
+        logger.info(f"Country info fetched for {country_name}: {country_info.get('currency_code')}")
+        return jsonify(country_info), 200
+    except Exception as e:
+        logger.error(f"Country info error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch country info'}), 500
+
+
+@app.route('/api/exchange-rate', methods=['GET'])
+def api_exchange_rate():
+    """Get currency exchange rate"""
+    try:
+        from_currency = request.args.get('from', 'USD').strip().upper()
+        to_currency = request.args.get('to', 'EUR').strip().upper()
+
+        if len(from_currency) != 3 or len(to_currency) != 3:
+            return jsonify({'error': 'Invalid currency code (must be 3-letter ISO code)'}), 400
+
+        rate = get_exchange_rate(from_currency, to_currency)
+        if not rate:
+            return jsonify({'error': 'Exchange rate not available'}), 404
+
+        logger.info(f"Exchange rate fetched: {from_currency} -> {to_currency} = {rate.get('rate')}")
+        return jsonify(rate), 200
+    except Exception as e:
+        logger.error(f"Exchange rate error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch exchange rate'}), 500
 
 
 if __name__ == '__main__':
