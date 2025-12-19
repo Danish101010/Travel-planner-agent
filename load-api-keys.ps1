@@ -1,7 +1,6 @@
-# Simple script: loads API keys from api-keys into current session env vars
-# Line 1: TAVILY_API_KEY
-# Line 2: GOOGLE_API_KEY
-# Line 3 (optional): GEOAPIFY_API_KEY
+# Simple script: loads API keys from api-keys into current session env vars.
+# Supports simple value-only files (line order) and optional KEY=VALUE entries.
+# Minimum: Line 1 TAVILY_API_KEY, Line 2 GOOGLE_API_KEY.
 
 $apiFile = "api-keys"
 
@@ -10,33 +9,93 @@ if (-not (Test-Path $apiFile)) {
     exit 1
 }
 
-# Read entire file (need at least TAVILY + GOOGLE)
-$lines = Get-Content -Path $apiFile
-if ($null -eq $lines -or $lines.Count -lt 2) {
-    Write-Error "api-keys must contain at least two lines: first TAVILY, second GOOGLE."
+$rawLines = Get-Content -Path $apiFile
+if ($null -eq $rawLines) {
+    Write-Error "api-keys file is empty."
     exit 1
 }
 
-$env:TAVILY_API_KEY = $lines[0].Trim()
-$env:GOOGLE_API_KEY = $lines[1].Trim()
+$lines = @()
+foreach ($line in $rawLines) {
+    if ($null -eq $line) { continue }
+    $trimmed = $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+    if ($trimmed.StartsWith('#')) { continue }
+    $lines += $trimmed
+}
 
-$optionalKeys = @(
-    @{ Name = 'GEOAPIFY_API_KEY'; Index = 2 }
-)
+if ($lines.Count -lt 2) {
+    Write-Error "api-keys must contain at least two values (Tavily, Google)."
+    exit 1
+}
 
-foreach ($entry in $optionalKeys) {
-    if ($lines.Count -gt $entry.Index -and $lines[$entry.Index].Trim()) {
-        $value = $lines[$entry.Index].Trim()
-        Set-Item -Path Env:$($entry.Name) -Value $value
+$kvPairs = @{}
+$orderedValues = @()
+foreach ($entry in $lines) {
+    if ($entry -match '^([A-Za-z0-9_]+)\s*=\s*(.*)$') {
+        $kvPairs[$matches[1].Trim()] = $matches[2].Trim()
+    } else {
+        $orderedValues += $entry
     }
 }
 
-Write-Host "Environment variables set for this PowerShell session:" -ForegroundColor Green
-Write-Host "  TAVILY_API_KEY (length): $($env:TAVILY_API_KEY.Length)"
-Write-Host "  GOOGLE_API_KEY (length): $($env:GOOGLE_API_KEY.Length)"
-if ($env:GEOAPIFY_API_KEY) {
-    Write-Host "  GEOAPIFY_API_KEY (length): $($env:GEOAPIFY_API_KEY.Length)"
-} else {
-    Write-Host "  GEOAPIFY_API_KEY: not set (autocomplete + curated POIs will fall back)"
+$script:orderedIndex = 0
+function Get-NextOrderedValue {
+    if ($script:orderedIndex -ge $script:orderedValues.Count) {
+        return $null
+    }
+    $value = $script:orderedValues[$script:orderedIndex]
+    $script:orderedIndex++
+    return $value
 }
+
+function Resolve-Value {
+    param(
+        [string]$Name,
+        [bool]$Required = $false
+    )
+
+    if ($script:kvPairs.ContainsKey($Name)) {
+        return $script:kvPairs[$Name]
+    }
+    $value = Get-NextOrderedValue
+    if ($Required -and [string]::IsNullOrWhiteSpace($value)) {
+        Write-Error "Missing value for $Name in api-keys."
+        exit 1
+    }
+    return $value
+}
+
+$keyPlan = @(
+    @{ Name = 'TAVILY_API_KEY'; Required = $true; Description = 'Research agent (Tavily)' }
+    @{ Name = 'GOOGLE_API_KEY'; Required = $true; Description = 'Gemma itinerary model' }
+    @{ Name = 'GEOAPIFY_API_KEY'; Required = $false; Description = 'Autocomplete & POIs' }
+    @{ Name = 'TRAVELPAYOUTS_TOKEN'; Required = $false; Description = 'TravelPayouts fares' }
+    @{ Name = 'IRCTC_RAPIDAPI_KEY'; Required = $false; Description = 'Indian Rail fares' }
+    @{ Name = 'IRCTC_RAPIDAPI_HOST'; Required = $false; Description = 'RapidAPI host override' }
+)
+
+foreach ($entry in $keyPlan) {
+    $value = Resolve-Value -Name $entry.Name -Required:$entry.Required
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        continue
+    }
+    Set-Item -Path Env:$($entry.Name) -Value $value
+}
+
+Write-Host "Environment variables set for this PowerShell session:" -ForegroundColor Green
+foreach ($entry in $keyPlan) {
+    $current = Get-Item -Path Env:$($entry.Name) -ErrorAction SilentlyContinue
+    if ($current -and $current.Value) {
+        $message = "  {0} (length): {1} - {2}" -f $entry.Name, $current.Value.Length, $entry.Description
+        Write-Host $message
+    } elseif ($entry.Required) {
+        $message = "  {0}: NOT SET (required)" -f $entry.Name
+        Write-Host $message -ForegroundColor Yellow
+    } else {
+        $message = "  {0}: not set ({1} disabled)" -f $entry.Name, $entry.Description
+        Write-Host $message
+    }
+}
+
 Write-Host "Run your app in this same terminal (e.g., 'python api.py')."

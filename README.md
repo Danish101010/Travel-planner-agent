@@ -29,8 +29,8 @@ A comprehensive AI-powered travel planning application with a modern web interfa
 - Cultural insights
 
 ✅ **Transport Pricing Intelligence**
-- Distance-aware train fare estimates for India-specific trips
-- Live international flight quotes via Kiwi Tequila API (with graceful fallbacks)
+- Live Indian Railways fares via IRCTC (RapidAPI free tier) with distance-aware heuristics as fallback
+- Free TravelPayouts flight fares, with distance heuristics when live data is unavailable
 - Automatic scaling for couples, families, or teams so costs stay accurate
 
 ## Setup Instructions
@@ -48,7 +48,10 @@ On Windows PowerShell:
 $env:GOOGLE_API_KEY="your_google_api_key_here"
 $env:TAVILY_API_KEY="your_tavily_api_key_here"
 $env:GEOAPIFY_API_KEY="your_geoapify_key_here"         # for autocomplete + POIs
-$env:TEQUILA_API_KEY="your_kiwi_tequila_key_here"      # for live flight quotes (optional)
+$env:TRAVELPAYOUTS_TOKEN="your_travelpayouts_token"     # for free flight fares fallback
+$env:IRCTC_RAPIDAPI_KEY="your_irctc_rapidapi_key"       # for live Indian Rail fares (optional)
+# Optional if RapidAPI host differs from default
+# $env:IRCTC_RAPIDAPI_HOST="irctc1.p.rapidapi.com"
 ```
 
 Or use `setx` for persistent variables:
@@ -56,7 +59,13 @@ Or use `setx` for persistent variables:
 setx GOOGLE_API_KEY "your_google_api_key_here"
 setx TAVILY_API_KEY "your_tavily_api_key_here"
 setx GEOAPIFY_API_KEY "your_geoapify_key_here"
-setx TEQUILA_API_KEY "your_kiwi_tequila_key_here"
+setx TRAVELPAYOUTS_TOKEN "your_travelpayouts_token"
+setx IRCTC_RAPIDAPI_KEY "your_irctc_rapidapi_key"
+rem Optional if RapidAPI host differs from default
+rem setx IRCTC_RAPIDAPI_HOST "irctc1.p.rapidapi.com"
+
+The TravelPayouts token comes from https://www.travelpayouts.com/ (free tier). Indian Rail fares use
+the `irctc1` RapidAPI collection; grab a free RapidAPI key and assign it to `IRCTC_RAPIDAPI_KEY`.
 ```
 
 Open http://127.0.0.1:5000 in your browser.
@@ -81,7 +90,7 @@ Open http://127.0.0.1:5000 in your browser.
 
 ## Common Issues
 
-- Missing keys: Ensure `api-keys` exists with two lines and run `./load-api-keys.ps1` in the same terminal before `python api.py`.
+- Missing keys: Ensure `api-keys` includes at least Tavily + Google entries (ordered lines or `KEY=VALUE`) and run `./load-api-keys.ps1` in the same terminal before `python api.py`.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
 - Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.
@@ -99,10 +108,14 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-2) Add your API keys in `api-keys` (two lines)
+2) Add your API keys in `api-keys` (ordered lines or `KEY=VALUE`)—minimum first two values
 ```text
-<TAVILY_API_KEY>
-<GOOGLE_API_KEY>
+TAVILY_API_KEY=xxxxxxxxxxxxxxxx
+GOOGLE_API_KEY=yyyyyyyyyyyyyyyy
+GEOAPIFY_API_KEY=optional-but-useful
+TRAVELPAYOUTS_TOKEN=optional-free-flight-fares
+IRCTC_RAPIDAPI_KEY=optional-indian-rail
+# IRCTC_RAPIDAPI_HOST=irctc1.p.rapidapi.com   (only if you need to override)
 ```
 
 3) Load keys into the current shell and run
@@ -131,7 +144,7 @@ Open http://127.0.0.1:5000 in your browser.
 
 ## Common Issues
 
-- Missing keys: Ensure `api-keys` exists with two lines and run `./load-api-keys.ps1` in the same terminal before `python api.py`.
+- Missing keys: Ensure `api-keys` includes at least Tavily + Google entries (ordered lines or `KEY=VALUE`) and run `./load-api-keys.ps1` in the same terminal before `python api.py`.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
 - Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.

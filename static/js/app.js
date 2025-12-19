@@ -47,8 +47,15 @@ async function handleFormSubmit(e) {
     const interestCheckboxes = document.querySelectorAll('input[name="interests"]:checked');
     const interests = Array.from(interestCheckboxes).map(cb => cb.value);
 
+    hideError();
+    showLoading(true);
+    if (resultsSection) {
+        resultsSection.classList.add('hidden');
+    }
+
     if (interests.length === 0) {
         showError('Please select at least one interest');
+        showLoading(false);
         return;
     }
 

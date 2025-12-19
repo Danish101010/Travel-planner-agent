@@ -2,6 +2,7 @@ import copy
 import logging
 import math
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -9,12 +10,25 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-TEQUILA_API_KEY = os.getenv("TEQUILA_API_KEY")
-TEQUILA_BASE_URL = "https://api.tequila.kiwi.com"
-
 EARTH_RADIUS_KM = 6371.0
 DEFAULT_DEPARTURE_OFFSET_DAYS = 30
 DEFAULT_FLIGHT_CURRENCY = os.getenv("FLIGHT_CURRENCY", "USD")
+QUOTE_CACHE_TTL_SECONDS = int(os.getenv("TRANSPORT_QUOTE_CACHE_TTL", "21600"))  # default 6h
+TRAVELPAYOUTS_TOKEN = os.getenv("TRAVELPAYOUTS_TOKEN")
+TRAVELPAYOUTS_SEARCH_URL = "https://api.travelpayouts.com/v2/prices/latest"
+
+_default_irctc_host = "irctc1.p.rapidapi.com"
+_raw_irctc_host = os.getenv("IRCTC_RAPIDAPI_HOST", _default_irctc_host) or _default_irctc_host
+if _raw_irctc_host.startswith("http"):
+    _parsed_irctc_host = _raw_irctc_host.replace("https://", "").replace("http://", "").strip("/")
+else:
+    _parsed_irctc_host = _raw_irctc_host.strip("/")
+if not _parsed_irctc_host or "irctc" not in _parsed_irctc_host.lower():
+    _parsed_irctc_host = _default_irctc_host
+IRCTC_RAPIDAPI_HOST = _parsed_irctc_host
+IRCTC_BASE_URL = f"https://{IRCTC_RAPIDAPI_HOST}/api/v3/trainBetweenStations"
+IRCTC_STATION_SEARCH_URL = f"https://{IRCTC_RAPIDAPI_HOST}/api/v1/searchStation"
+IRCTC_RAPIDAPI_KEY = os.getenv("IRCTC_RAPIDAPI_KEY") or os.getenv("RAPIDAPI_KEY")
 
 TRAIN_CLASS_RATES = {
     "SL": {"label": "Sleeper", "per_km": 0.75, "reservation_fee": 20, "superfast_fee": 45},
@@ -76,6 +90,33 @@ COUNTRY_ALIASES = {
     "UNITED STATES": "US",
     "UNITED STATES OF AMERICA": "US",
 }
+
+_quote_cache: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "irctc": {},
+    "travelpayouts": {},
+}
+
+_station_cache: Dict[str, Optional[str]] = {}
+
+
+def _cached_quotes(channel: str, key: str):
+    bucket = _quote_cache.get(channel, {})
+    entry = bucket.get(key)
+    if not entry:
+        return None
+    if time.time() - entry["ts"] > QUOTE_CACHE_TTL_SECONDS:
+        bucket.pop(key, None)
+        return None
+    return copy.deepcopy(entry["data"])
+
+
+def _store_cached_quotes(channel: str, key: str, data):
+    if channel not in _quote_cache:
+        _quote_cache[channel] = {}
+    _quote_cache[channel][key] = {
+        "data": copy.deepcopy(data),
+        "ts": time.time(),
+    }
 
 
 def _haversine_distance(source: Dict[str, Any], destination: Dict[str, Any]) -> float:
@@ -141,12 +182,201 @@ def _estimate_train_quotes(source: Dict[str, Any], destination: Dict[str, Any], 
     return quotes
 
 
+def _flatten_irctc_fares(fare_blob: Any) -> Dict[str, float]:
+    fares: Dict[str, float] = {}
+    if isinstance(fare_blob, dict):
+        for key, value in fare_blob.items():
+            if isinstance(value, (int, float, str)):
+                try:
+                    fares[key.upper()] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if sub_value is None:
+                        continue
+                    try:
+                        fares[sub_key.upper()] = float(sub_value)
+                    except (TypeError, ValueError):
+                        continue
+    elif isinstance(fare_blob, list):
+        for entry in fare_blob:
+            if not isinstance(entry, dict):
+                continue
+            class_code = (entry.get("classType") or entry.get("class_code") or entry.get("class") or entry.get("code") or "").strip()
+            if not class_code:
+                continue
+            raw_amount = entry.get("fare") or entry.get("avg_fare") or entry.get("price") or entry.get("value")
+            if raw_amount is None:
+                continue
+            try:
+                fares[class_code.upper()] = float(raw_amount)
+            except (TypeError, ValueError):
+                continue
+    return fares
+
+
+def _irctc_train_quotes(source_code: Optional[str], dest_code: Optional[str], departure_date: datetime,
+                        passengers: int) -> List[Dict[str, Any]]:
+    if not IRCTC_RAPIDAPI_KEY:
+        logger.info("Skipping IRCTC lookup: IRCTC_RAPIDAPI_KEY missing")
+        return []
+    if not source_code or not dest_code:
+        logger.info("Skipping IRCTC lookup: station codes unresolved (%s -> %s)", source_code, dest_code)
+        return []
+
+    cache_key = f"{source_code}:{dest_code}:{departure_date.date().isoformat()}"
+    cached = _cached_quotes("irctc", cache_key)
+    if cached is not None:
+        logger.info("IRCTC cache hit for %s", cache_key)
+        return cached
+
+    logger.info(
+        "IRCTC lookup %s -> %s (%s)",
+        source_code,
+        dest_code,
+        departure_date.date().isoformat(),
+    )
+
+    params = {
+        "fromStationCode": source_code.upper(),
+        "toStationCode": dest_code.upper(),
+        "dateOfJourney": departure_date.strftime("%Y-%m-%d"),
+    }
+    headers = {
+        "X-RapidAPI-Key": IRCTC_RAPIDAPI_KEY,
+        "X-RapidAPI-Host": IRCTC_RAPIDAPI_HOST,
+    }
+
+    try:
+        response = requests.get(
+            IRCTC_BASE_URL,
+            headers=headers,
+            params=params,
+            timeout=12,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception as exc:
+        logger.warning("IRCTC train quote lookup failed for %s -> %s (%s): %s",
+                       source_code, dest_code, departure_date.date().isoformat(), exc)
+        return []
+
+    trains = payload.get("data") or payload.get("train") or []
+    if isinstance(trains, dict):
+        trains = list(trains.values())
+
+    quotes: List[Dict[str, Any]] = []
+    passengers = max(1, passengers)
+
+    for train in trains:
+        if not isinstance(train, dict):
+            continue
+        fare_table = _flatten_irctc_fares(train.get("fare") or train.get("classes") or {})
+        if not fare_table:
+            continue
+
+        duration_hours = _iso_duration_to_hours(train.get("duration") or train.get("duration_hr"))
+        distance = train.get("distance_km") or train.get("distance")
+        provider = train.get("train_name") or train.get("trainName") or "Indian Railways"
+        train_id = train.get("train_number") or train.get("trainNo") or provider
+
+        for class_code, amount in fare_table.items():
+            if amount <= 0:
+                continue
+            per_person = round(amount, 2)
+            quotes.append({
+                "id": f"{train_id}-{class_code}",
+                "mode": "train",
+                "provider": provider,
+                "class": class_code,
+                "currency": "INR",
+                "price_per_person": per_person,
+                "group_price": round(per_person * passengers, 2),
+                "duration_hours": duration_hours,
+                "confidence": "live",
+                "notes": "Fare sourced from IRCTC (RapidAPI free tier)",
+                "departure": departure_date.date().isoformat(),
+                "distance_km": distance,
+            })
+            if len(quotes) >= 6:
+                break
+        if len(quotes) >= 6:
+            break
+
+    if quotes:
+        logger.info("IRCTC returned %s live quotes for %s", len(quotes), cache_key)
+        _store_cached_quotes("irctc", cache_key, quotes)
+
+    return quotes
+
+
 def _resolve_station_code(meta: Dict[str, Any]) -> Optional[str]:
     code = meta.get("station_code") or meta.get("code")
     if code:
         return code.upper()
     name = (meta.get("name") or meta.get("label") or meta.get("display_name") or "").lower()
-    return CITY_TO_STATION.get(name)
+    if not name:
+        return None
+
+    cached = _station_cache.get(name)
+    if cached is not None:
+        return cached
+
+    mapped = CITY_TO_STATION.get(name)
+    if mapped:
+        _station_cache[name] = mapped
+        return mapped
+
+    remote_code = _lookup_station_code_remote(name)
+    if remote_code:
+        _station_cache[name] = remote_code
+        return remote_code
+
+    _station_cache[name] = None
+    return None
+
+
+def _lookup_station_code_remote(query: str) -> Optional[str]:
+    if not IRCTC_RAPIDAPI_KEY:
+        logger.info("Station lookup skipped: IRCTC_RAPIDAPI_KEY missing")
+        return None
+    if not query or len(query) < 3:
+        return None
+
+    headers = {
+        "X-RapidAPI-Key": IRCTC_RAPIDAPI_KEY,
+        "X-RapidAPI-Host": IRCTC_RAPIDAPI_HOST,
+    }
+    params = {"query": query}
+
+    try:
+        response = requests.get(
+            IRCTC_STATION_SEARCH_URL,
+            headers=headers,
+            params=params,
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    except Exception as exc:
+        logger.warning("Station lookup failed for %s: %s", query, exc)
+        return None
+
+    entries = payload.get("data") or []
+    if isinstance(entries, dict):
+        entries = list(entries.values())
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        code = entry.get("station_code") or entry.get("stationCode") or entry.get("code")
+        name = entry.get("station_name") or entry.get("stationName") or entry.get("name")
+        if code and name:
+            logger.info("Station lookup success: %s -> %s", query, code)
+            return code.upper()
+
+    return None
 
 
 def _resolve_airport_code(meta: Dict[str, Any]) -> Optional[str]:
@@ -166,107 +396,169 @@ def _normalize_country_code(raw_value: Optional[str]) -> str:
     return COUNTRY_ALIASES.get(code, code)
 
 
-def _tequila_headers() -> Dict[str, str]:
-    return {"apikey": TEQUILA_API_KEY} if TEQUILA_API_KEY else {}
-
-
-def _lookup_iata_with_tequila(term: str, country: Optional[str]) -> Optional[str]:
-    if not TEQUILA_API_KEY or not term:
-        return None
-    try:
-        params = {
-            "term": term,
-            "location_types": "city",
-            "limit": 1,
-        }
-        if country:
-            params["country"] = country.upper()
-        response = requests.get(
-            f"{TEQUILA_BASE_URL}/locations/query",
-            headers=_tequila_headers(),
-            params=params,
-            timeout=8,
-        )
-        response.raise_for_status()
-        data = response.json().get("locations", [])
-        if data:
-            return data[0].get("code")
-    except Exception as exc:
-        logger.warning("Failed to resolve IATA code via Tequila: %s", exc)
-    return None
-
-
 def _iso_duration_to_hours(duration: Any) -> Optional[float]:
     if isinstance(duration, (int, float)):
         return round(duration / 3600.0, 1)
-    if isinstance(duration, str) and duration.startswith("PT"):
-        hours = 0.0
-        current = duration[2:]
-        number = ""
-        for char in current:
-            if char.isdigit():
-                number += char
-            else:
-                if char == "H" and number:
-                    hours += float(number)
-                elif char == "M" and number:
-                    hours += float(number) / 60.0
-                number = ""
-        return round(hours, 1)
+    if isinstance(duration, str):
+        value = duration.strip()
+        if value.startswith("PT"):
+            hours = 0.0
+            current = value[2:]
+            number = ""
+            for char in current:
+                if char.isdigit():
+                    number += char
+                else:
+                    if char == "H" and number:
+                        hours += float(number)
+                    elif char == "M" and number:
+                        hours += float(number) / 60.0
+                    number = ""
+            return round(hours, 1)
+        if ":" in value:
+            try:
+                parts = [float(part) for part in value.split(":") if part.strip()]
+            except ValueError:
+                parts = []
+            if parts:
+                hours = parts[0]
+                if len(parts) > 1:
+                    hours += parts[1] / 60.0
+                if len(parts) > 2:
+                    hours += parts[2] / 3600.0
+                return round(hours, 1)
     return None
 
 
-def _tequila_flight_quotes(source_code: str, dest_code: str, departure_date: datetime, travelers: int,
-                           currency: str) -> List[Dict[str, Any]]:
-    if not TEQUILA_API_KEY or not source_code or not dest_code:
+def _travelpayouts_flight_quotes(source_code: Optional[str], dest_code: Optional[str],
+                                 departure_date: datetime, travelers: int,
+                                 currency: str) -> List[Dict[str, Any]]:
+    if not TRAVELPAYOUTS_TOKEN or not source_code or not dest_code:
+        return []
+    if source_code.upper() == dest_code.upper():
         return []
 
-    date_str = departure_date.strftime("%d/%m/%Y")
+    cache_key = f"{source_code}:{dest_code}:{departure_date.date().isoformat()}:{currency}:{travelers}"
+    cached = _cached_quotes("travelpayouts", cache_key)
+    if cached is not None:
+        logger.info("TravelPayouts cache hit for %s", cache_key)
+        return cached
+
+    logger.info(
+        "TravelPayouts lookup %s -> %s (%s, %s pax)",
+        source_code,
+        dest_code,
+        departure_date.date().isoformat(),
+        travelers,
+    )
+
     params = {
-        "fly_from": source_code,
-        "fly_to": dest_code,
-        "date_from": date_str,
-        "date_to": date_str,
-        "curr": currency,
-        "adults": max(1, travelers),
-        "limit": 4,
-        "sort": "price",
+        "origin": source_code.upper(),
+        "destination": dest_code.upper(),
+        "currency": currency,
+        "limit": 5,
+        "page": 1,
+        "depart_date": departure_date.strftime("%Y-%m-%d"),
+        "show_to_affiliates": "true",
+        "sorting": "price",
+        "token": TRAVELPAYOUTS_TOKEN,
+    }
+    headers = {
+        "X-Access-Token": TRAVELPAYOUTS_TOKEN,
     }
 
-    try:
-        response = requests.get(
-            f"{TEQUILA_BASE_URL}/v2/search",
-            headers=_tequila_headers(),
-            params=params,
-            timeout=12,
-        )
-        response.raise_for_status()
-        data = response.json().get("data", [])
-    except Exception as exc:
-        logger.warning("Flight quote API failed: %s", exc)
-        return []
+    def _perform_request(request_params):
+        try:
+            response = requests.get(
+                TRAVELPAYOUTS_SEARCH_URL,
+                params=request_params,
+                headers=headers,
+                timeout=12,
+            )
+            response.raise_for_status()
+            payload = response.json() or {}
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", "unknown")
+            logger.warning(
+                "TravelPayouts API HTTP %s for %s -> %s",
+                status,
+                request_params.get("origin"),
+                request_params.get("destination"),
+            )
+            return None
 
-    quotes = []
-    for entry in data:
-        price = entry.get("price")
-        currency_code = entry.get("conversion", {}).get(currency, currency)
-        duration_hours = _iso_duration_to_hours(entry.get("duration", {}).get("total"))
-        airlines = entry.get("airlines", [])
-        carrier = airlines[0] if airlines else "Multiple"
+        error_message = payload.get("error") or payload.get("message")
+        if error_message:
+            logger.warning("TravelPayouts API response error: %s", error_message)
+        if payload.get("success") is False and not error_message:
+            logger.warning("TravelPayouts marked request unsuccessful for %s -> %s",
+                           request_params.get("origin"), request_params.get("destination"))
+        return payload
+
+    def _extract_entries(payload_obj):
+        if not isinstance(payload_obj, dict):
+            return []
+        entries_obj = payload_obj.get("data") or payload_obj.get("results") or []
+        if isinstance(entries_obj, dict):
+            entries_list = list(entries_obj.values())
+        else:
+            entries_list = entries_obj if isinstance(entries_obj, list) else []
+        return entries_list
+
+    payload = _perform_request(params)
+    entries = _extract_entries(payload)
+
+    if not entries:
+        logger.info("TravelPayouts returned no fares for %s; retrying without depart_date filter", cache_key)
+        retry_params = dict(params)
+        retry_params.pop("depart_date", None)
+        payload = _perform_request(retry_params)
+        entries = _extract_entries(payload)
+        if not entries:
+            logger.info("TravelPayouts still returned no fares for %s after retry", cache_key)
+
+    quotes: List[Dict[str, Any]] = []
+    travelers = max(1, travelers)
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        price = entry.get("value") or entry.get("price")
+        if not price:
+            continue
+        try:
+            per_person = float(price)
+        except (TypeError, ValueError):
+            continue
+
+        flight_duration = entry.get("duration") or entry.get("duration_to") or entry.get("duration_from")
+        duration_hours = _iso_duration_to_hours(flight_duration)
+
+        quote_id = entry.get("id") or f"tp-{entry.get('airline')}-{entry.get('flight_number')}-{entry.get('departure_at')}"
+        provider = entry.get("airline") or "TravelPayouts"
+        departure = (entry.get("departure_at") or entry.get("depart_date") or "")[:10]
 
         quotes.append({
-            "id": entry.get("id"),
+            "id": quote_id,
             "mode": "flight",
-            "provider": carrier,
-            "currency": currency_code,
-            "price_per_person": float(price),
-            "group_price": round(float(price) * max(1, travelers), 2),
+            "provider": provider,
+            "currency": currency,
+            "price_per_person": round(per_person, 2),
+            "group_price": round(per_person * travelers, 2),
             "duration_hours": duration_hours,
-            "stops": entry.get("route") and max(0, len(entry["route"]) - 1),
+            "stops": entry.get("number_of_changes"),
             "confidence": "live",
-            "booking_url": entry.get("deep_link"),
-            "departure": entry.get("local_departure", "")[:10],
+            "booking_url": entry.get("link"),
+            "departure": departure,
+            "notes": "TravelPayouts fare cache (free tier)",
         })
+
+        if len(quotes) >= 4:
+            break
+
+    if quotes:
+        logger.info("TravelPayouts returned %s live quotes for %s", len(quotes), cache_key)
+        _store_cached_quotes("travelpayouts", cache_key, quotes)
 
     return quotes
 
@@ -319,14 +611,33 @@ def build_transport_pricing(source_details: Optional[Dict[str, Any]],
     is_india_trip = source_country == "IN" and destination_country == "IN"
 
     if is_india_trip:
-        quotes = _estimate_train_quotes(source_details, destination_details, travelers, departure, distance_km)
+        logger.info(
+            "Domestic India trip detected (%s -> %s)",
+            source_details.get("name"),
+            destination_details.get("name"),
+        )
+        source_station = _resolve_station_code(source_details)
+        dest_station = _resolve_station_code(destination_details)
+        logger.info("Resolved station codes: %s -> %s", source_station, dest_station)
+        quotes = _irctc_train_quotes(source_station, dest_station, departure, travelers)
+        if not quotes:
+            logger.info("Using heuristic train fares due to missing live IRCTC data")
+            quotes = _estimate_train_quotes(source_details, destination_details, travelers, departure, distance_km)
         trip_type = "india_train"
     else:
-        source_code = _resolve_airport_code(source_details) or _lookup_iata_with_tequila(source_details.get("name"), source_country)
-        dest_code = _resolve_airport_code(destination_details) or _lookup_iata_with_tequila(destination_details.get("name"), destination_country)
+        logger.info(
+            "International/mixed trip (%s -> %s): activating flight pricing",
+            source_details.get("name"),
+            destination_details.get("name"),
+        )
+        source_code = _resolve_airport_code(source_details)
+        dest_code = _resolve_airport_code(destination_details)
+        logger.info("Resolved airport codes: %s -> %s", source_code, dest_code)
 
-        quotes = _tequila_flight_quotes(source_code, dest_code, departure, travelers, DEFAULT_FLIGHT_CURRENCY)
+        quotes: List[Dict[str, Any]] = []
+        quotes = _travelpayouts_flight_quotes(source_code, dest_code, departure, travelers, DEFAULT_FLIGHT_CURRENCY)
         if not quotes:
+            logger.info("Using heuristic flight fares due to missing live quotes")
             quotes = _fallback_flight_quotes(distance_km, travelers, DEFAULT_FLIGHT_CURRENCY)
         trip_type = "international_flight"
 
