@@ -2,7 +2,6 @@
 # Line 1: TAVILY_API_KEY
 # Line 2: GOOGLE_API_KEY
 # Line 3 (optional): GEOAPIFY_API_KEY
-# Line 4 (optional): ORS_API_KEY
 
 $apiFile = "api-keys"
 
@@ -22,8 +21,7 @@ $env:TAVILY_API_KEY = $lines[0].Trim()
 $env:GOOGLE_API_KEY = $lines[1].Trim()
 
 $optionalKeys = @(
-    @{ Name = 'GEOAPIFY_API_KEY'; Index = 2 },
-    @{ Name = 'ORS_API_KEY'; Index = 3 }
+    @{ Name = 'GEOAPIFY_API_KEY'; Index = 2 }
 )
 
 foreach ($entry in $optionalKeys) {
@@ -36,11 +34,6 @@ foreach ($entry in $optionalKeys) {
 Write-Host "Environment variables set for this PowerShell session:" -ForegroundColor Green
 Write-Host "  TAVILY_API_KEY (length): $($env:TAVILY_API_KEY.Length)"
 Write-Host "  GOOGLE_API_KEY (length): $($env:GOOGLE_API_KEY.Length)"
-if ($env:ORS_API_KEY) {
-    Write-Host "  ORS_API_KEY (length): $($env:ORS_API_KEY.Length)"
-} else {
-    Write-Host "  ORS_API_KEY: not set (routing will be disabled)"
-}
 if ($env:GEOAPIFY_API_KEY) {
     Write-Host "  GEOAPIFY_API_KEY (length): $($env:GEOAPIFY_API_KEY.Length)"
 } else {

@@ -28,12 +28,6 @@ A comprehensive AI-powered travel planning application with a modern web interfa
 - Hidden gems
 - Cultural insights
 
-✅ **Interactive Maps & Routing**
-- Leaflet + OpenStreetMap tiles for real-time visualization
-- Nearby attractions powered by Geoapify Places
-- Door-to-door route preview via OpenRouteService
-- Clickable POI list that pans/zooms the live map
-
 ✅ **Transport Pricing Intelligence**
 - Distance-aware train fare estimates for India-specific trips
 - Live international flight quotes via Kiwi Tequila API (with graceful fallbacks)
@@ -54,7 +48,6 @@ On Windows PowerShell:
 $env:GOOGLE_API_KEY="your_google_api_key_here"
 $env:TAVILY_API_KEY="your_tavily_api_key_here"
 $env:GEOAPIFY_API_KEY="your_geoapify_key_here"         # for autocomplete + POIs
-$env:ORS_API_KEY="your_openrouteservice_key_here"      # for routing
 $env:TEQUILA_API_KEY="your_kiwi_tequila_key_here"      # for live flight quotes (optional)
 ```
 
@@ -63,7 +56,6 @@ Or use `setx` for persistent variables:
 setx GOOGLE_API_KEY "your_google_api_key_here"
 setx TAVILY_API_KEY "your_tavily_api_key_here"
 setx GEOAPIFY_API_KEY "your_geoapify_key_here"
-setx ORS_API_KEY "your_openrouteservice_key_here"
 setx TEQUILA_API_KEY "your_kiwi_tequila_key_here"
 ```
 
@@ -76,7 +68,7 @@ Open http://127.0.0.1:5000 in your browser.
 - `api.py`: Flask server and endpoints
 - `planner.py`: Itinerary and budget generation using `gemma-3-4b-it`
 - `templates/index.html`: UI
-- `static/css/style.css`, `static/js/app.js`: Frontend assets (including Leaflet map + POIs)
+- `static/css/style.css`, `static/js/app.js`: Frontend assets
 - `load-api-keys.ps1`: One-liner script to set env vars from `api-keys`
 
 ## Health Check and Basics
@@ -93,15 +85,6 @@ Open http://127.0.0.1:5000 in your browser.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
 - Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.
-
-## Map, POI & Routing Integrations
-
-- **Geoapify Places**: requires `GEOAPIFY_API_KEY`, used for nearby attractions (radius ~5km), curated meal spots, and additional metadata such as addresses, categories, and websites.
-- **OpenRouteService**: requires `ORS_API_KEY`, used for basic routing between the selected source and destination (driving profile by default).
-- **Geoapify Autocomplete**: uses the same `GEOAPIFY_API_KEY` for global place suggestions (falls back to a small offline list if absent).
-- **Leaflet / OpenStreetMap**: no key needed; renders the live map, POI markers, and the ORS polyline.
-
-If the optional keys are not provided the rest of the planner continues to work, but the Map & Attractions tab will fall back to an empty state.
 
 # Smart Travel Planner — Local Development Guide
 

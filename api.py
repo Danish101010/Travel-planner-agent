@@ -20,7 +20,6 @@ from travel_data import (
     get_travel_advisory,
     get_exchange_rate,
     get_pois,
-    get_route_directions,
     get_hotels,
 )
 from transport_pricing import build_transport_pricing
@@ -587,7 +586,6 @@ def health():
         env_vars = {
             'GOOGLE_API_KEY': bool(os.getenv('GOOGLE_API_KEY')),
             'TAVILY_API_KEY': bool(os.getenv('TAVILY_API_KEY')),
-            'ORS_API_KEY': bool(os.getenv('ORS_API_KEY')),
             'GEOAPIFY_API_KEY': bool(os.getenv('GEOAPIFY_API_KEY'))
         }
         
@@ -701,69 +699,6 @@ def api_timezone():
     except Exception as e:
         logger.error(f"Timezone API error: {str(e)}")
         return jsonify({'error': 'Failed to fetch timezone'}), 500
-
-
-@app.route('/api/pois', methods=['POST'])
-def api_pois():
-    """Get POIs near coordinates via Geoapify Places"""
-    try:
-        if not request.is_json:
-            return jsonify({'error': 'Content-Type must be application/json'}), 400
-
-        data = request.json or {}
-        lat = float(data.get('lat', 0))
-        lon = float(data.get('lon', 0))
-        radius = int(data.get('radius', 4000))
-        limit = int(data.get('limit', 15))
-        kinds = data.get('kinds')
-
-        if not lat or not lon:
-            return jsonify({'error': 'Latitude and longitude are required'}), 400
-
-        cache_name = f"{lat:.3f},{lon:.3f}"
-        cache_date = f"{radius}:{limit}:{kinds or 'any'}"
-        cache_key = _build_cache_key(cache_name, cache_date, 'pois')
-        pois = _cached_geo_result(
-            _poi_cache,
-            cache_key,
-            lambda: get_pois(lat, lon, kinds=kinds, radius=radius, limit=limit),
-            fallback=[]
-        )
-        return jsonify({'pois': pois}), 200
-    except ValueError as e:
-        logger.warning(f"POI input error: {str(e)}")
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        logger.error(f"POI service error: {str(e)}")
-        return jsonify({'error': 'Failed to fetch POIs'}), 500
-
-
-@app.route('/api/route', methods=['POST'])
-def api_route():
-    """Get basic route between source and destination using OpenRouteService"""
-    try:
-        if not request.is_json:
-            return jsonify({'error': 'Content-Type must be application/json'}), 400
-
-        data = request.json or {}
-        source = data.get('source') or {}
-        destination = data.get('destination') or {}
-        profile = data.get('profile', 'driving-car')
-
-        if not source or not destination:
-            return jsonify({'error': 'Source and destination objects are required'}), 400
-
-        route = get_route_directions(source, destination, profile=profile)
-        if not route:
-            return jsonify({'error': 'Route not available'}), 404
-
-        return jsonify({'route': route}), 200
-    except ValueError as e:
-        logger.warning(f"Route input error: {str(e)}")
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        logger.error(f"Route service error: {str(e)}")
-        return jsonify({'error': 'Failed to fetch route'}), 500
 
 
 @app.route('/api/travel-advisory', methods=['GET'])

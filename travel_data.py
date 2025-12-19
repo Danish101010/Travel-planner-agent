@@ -6,7 +6,6 @@ Free travel data integrations (no API keys needed)
 """
 
 import requests
-import json
 from functools import lru_cache
 import logging
 import urllib3
@@ -26,7 +25,6 @@ RESTCOUNTRIES_URL = "https://restcountries.com/v3.1"
 TRAVEL_ADVISORY_URL = "https://www.travel-advisory.info/api"
 EXCHANGERATE_URL = "https://api.exchangerate-api.com/v4/latest"
 GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
-OPENROUTESERVICE_BASE_URL = "https://api.openrouteservice.org/v2/directions"
 GEOAPIFY_AUTOCOMPLETE_URL = "https://api.geoapify.com/v1/geocode/autocomplete"
 NOMINATIM_AUTOCOMPLETE_URL = "https://nominatim.openstreetmap.org/search"
 DEFAULT_POI_RADIUS = 2500
@@ -600,82 +598,6 @@ def _poi_rank_key(poi):
     except (TypeError, ValueError):
         dist = float('inf')
     return (-rate, dist)
-
-def get_route_directions(source: dict, destination: dict, profile: str = 'driving-car',
-                         api_key: Optional[str] = None):
-    """Fetch a route between two coordinates using OpenRouteService."""
-    api_key = api_key or os.getenv('ORS_API_KEY')
-    if not api_key:
-        raise ValueError('Missing OpenRouteService API key')
-
-    if not source or not destination:
-        raise ValueError('Source and destination coordinates are required')
-
-    try:
-        payload = {
-            'coordinates': [
-                [float(source['lon']), float(source['lat'])],
-                [float(destination['lon']), float(destination['lat'])]
-            ]
-        }
-    except (KeyError, TypeError, ValueError):
-        raise ValueError('Invalid coordinate structure for routing')
-
-    headers = {
-        'Authorization': api_key,
-        'Content-Type': 'application/json'
-    }
-
-    try:
-        response = requests.post(
-            f"{OPENROUTESERVICE_BASE_URL}/{profile}",
-            json=payload,
-            headers=headers,
-            timeout=20
-        )
-    except Exception as e:
-        logger.error(f"OpenRouteService network error: {str(e)}")
-        return None
-
-    if response.status_code == 400:
-        message = 'Route request rejected'
-        try:
-            details = response.json()
-            message = details.get('error', {}).get('message', message)
-        except Exception:
-            pass
-        logger.warning(f"OpenRouteService limit hit: {message}")
-        raise ValueError(message)
-
-    try:
-        response.raise_for_status()
-    except Exception as e:
-        logger.error(f"OpenRouteService error ({response.status_code}): {str(e)}")
-        return None
-
-    try:
-        data = response.json()
-    except Exception as e:
-        logger.error(f"OpenRouteService JSON error: {str(e)}")
-        return None
-
-    features = data.get('features', [])
-    if not features:
-        return None
-
-    feature = features[0]
-    props = feature.get('properties', {})
-    summary = props.get('summary', {})
-    segments = props.get('segments', [])
-    steps = segments[0].get('steps', []) if segments else []
-
-    return {
-        'geometry': feature.get('geometry'),
-        'distance_m': summary.get('distance', 0),
-        'duration_s': summary.get('duration', 0),
-        'steps': steps
-    }
-
 
 def get_travel_advisories(country_code: str):
     """
