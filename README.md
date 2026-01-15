@@ -41,6 +41,13 @@ A comprehensive AI-powered travel planning application with a modern web interfa
 pip install -r requirements.txt
 ```
 
+On macOS/Linux:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ### 2. Set Environment Variables
 
 On Windows PowerShell:
@@ -52,6 +59,17 @@ $env:TRAVELPAYOUTS_TOKEN="your_travelpayouts_token"     # for free flight fares 
 $env:IRCTC_RAPIDAPI_KEY="your_irctc_rapidapi_key"       # for live Indian Rail fares (optional)
 # Optional if RapidAPI host differs from default
 # $env:IRCTC_RAPIDAPI_HOST="irctc1.p.rapidapi.com"
+```
+
+On macOS/Linux (zsh/bash):
+```bash
+export GOOGLE_API_KEY="your_google_api_key_here"
+export TAVILY_API_KEY="your_tavily_api_key_here"
+export GEOAPIFY_API_KEY="your_geoapify_key_here"         # for autocomplete + POIs
+export TRAVELPAYOUTS_TOKEN="your_travelpayouts_token"     # for free flight fares fallback
+export IRCTC_RAPIDAPI_KEY="your_irctc_rapidapi_key"       # for live Indian Rail fares (optional)
+# Optional if RapidAPI host differs from default
+# export IRCTC_RAPIDAPI_HOST="irctc1.p.rapidapi.com"
 ```
 
 Or use `setx` for persistent variables:
@@ -79,6 +97,7 @@ Open http://127.0.0.1:5000 in your browser.
 - `templates/index.html`: UI
 - `static/css/style.css`, `static/js/app.js`: Frontend assets
 - `load-api-keys.ps1`: One-liner script to set env vars from `api-keys`
+- `load-api-keys.sh`: One-liner script to set env vars from `api-keys` (macOS/Linux)
 
 ## Health Check and Basics
 
@@ -94,6 +113,7 @@ Open http://127.0.0.1:5000 in your browser.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
 - Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.
+- Port in use (macOS/Linux): `export PORT=5001; python api.py` then open http://127.0.0.1:5001.
 
 # Smart Travel Planner — Local Development Guide
 
@@ -105,6 +125,13 @@ A simple guide to run the app locally on Windows (PowerShell). This app serves a
 ```powershell
 python -m venv .venv
 ./.venv/Scripts/Activate.ps1
+pip install -r requirements.txt
+```
+
+macOS/Linux:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -124,6 +151,12 @@ IRCTC_RAPIDAPI_KEY=optional-indian-rail
 python api.py
 ```
 
+macOS/Linux:
+```bash
+source ./load-api-keys.sh
+python api.py
+```
+
 Open http://127.0.0.1:5000 in your browser.
 
 ## What’s Included
@@ -133,6 +166,7 @@ Open http://127.0.0.1:5000 in your browser.
 - `templates/index.html`: UI
 - `static/css/style.css`, `static/js/app.js`: Frontend assets
 - `load-api-keys.ps1`: One-liner script to set env vars from `api-keys`
+- `load-api-keys.sh`: One-liner script to set env vars from `api-keys` (macOS/Linux)
 
 ## Health Check and Basics
 
@@ -148,11 +182,13 @@ Open http://127.0.0.1:5000 in your browser.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
 - Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.
+- Port in use (macOS/Linux): `export PORT=5001; python api.py` then open http://127.0.0.1:5001.
 
 ## Notes
 
 - The model is fixed to `gemma-3-4b-it` per app design.
 - Keys are loaded into the current PowerShell session only (not persistent).
 - For a fresh session, rerun `./load-api-keys.ps1` before starting the server.
+- On macOS/Linux, keys are loaded into the current shell session only; rerun `source ./load-api-keys.sh` as needed.
 
 Happy hacking! ✈️

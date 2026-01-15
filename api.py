@@ -30,6 +30,20 @@ from datetime import datetime
 import time
 import copy
 from collections import defaultdict, deque
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables for local development
+_env_name = os.getenv('FLASK_ENV')
+_base_dir = Path(__file__).resolve().parent
+if _env_name:
+    _env_path = _base_dir / f".env.{_env_name}"
+    if _env_path.exists():
+        load_dotenv(_env_path, override=False)
+else:
+    _dev_env = _base_dir / ".env.development"
+    if _dev_env.exists():
+        load_dotenv(_dev_env, override=False)
 
 # Configuration
 class Config:
