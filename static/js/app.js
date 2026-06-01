@@ -4,6 +4,7 @@ const API_URL = '/api';
 // State for autocomplete results and selected destination
 let destinationCoords = { lat: 0, lon: 0, country: '', state: '', name: '', display_name: '' };
 let sourceCoords = { lat: 0, lon: 0, country: '', state: '', name: '', display_name: '' };
+let sourceCurrencyInfo = { code: 'USD', symbol: '$' };
 
 // DOM Elements
 const form = document.getElementById('plannerForm');
@@ -81,6 +82,11 @@ async function handleFormSubmit(e) {
 
         destinationCoords = resolvedDestinationCoords;
         sourceCoords = resolvedSourceCoords;
+
+        // If user didn't use autocomplete, ensure we resolve their source currency
+        if (!sourceCoords.name || sourceCoords.name !== source || sourceCurrencyInfo.symbol === '$') {
+            await updateSourceCurrency(source);
+        }
 
         if (destinationCoords.lat && destinationCoords.lon) {
             console.log('Coords valid, fetching extended data...');
@@ -217,7 +223,9 @@ async function handleFormSubmit(e) {
                 source_details: sourceCoords,
                 destination_details: destinationCoords,
                 weather: weatherData,
-                timezone: timezoneData
+                timezone: timezoneData,
+                source_currency: sourceCurrencyInfo.code,
+                dest_currency: countryInfo && countryInfo.currency_code ? countryInfo.currency_code : sourceCurrencyInfo.code
             })
         });
 
@@ -271,25 +279,21 @@ async function handleFormSubmit(e) {
 
 // Display Results
 function displayResults(itinerary, budget, source, destination, days, budgetAmount, style, group, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, transport = null, groupContext = null, startDate = '', hotels = []) {
-    // Use local currency if available, otherwise USD
-    let currencySymbol = '$';
-    let currencyCode = 'USD';
-    let exchangeRateValue = 1; // Default 1:1 for USD
+    
+    // Transport uses SOURCE currency
+    let srcCurrencyCode = sourceCurrencyInfo.code || 'USD';
+    let srcCurrencySymbol = sourceCurrencyInfo.symbol || '$';
+    
+    // On-ground uses DESTINATION currency
+    let destCurrencyCode = (countryInfo && countryInfo.currency_code) ? countryInfo.currency_code : srcCurrencyCode;
+    let destCurrencySymbol = (countryInfo && countryInfo.currency_symbol) ? countryInfo.currency_symbol : srcCurrencySymbol;
+    
+    let exchangeRateValue = 1; 
     const travelersCount = (groupContext && groupContext.travelers) || 1;
     const groupLabel = (groupContext && groupContext.type) || group;
-    
-    if (countryInfo && countryInfo.currency_symbol && countryInfo.currency_code) {
-        currencySymbol = countryInfo.currency_symbol;
-        currencyCode = countryInfo.currency_code;
-        
-        // Get exchange rate if available
-        if (exchangeRate && exchangeRate.rate) {
-            exchangeRateValue = exchangeRate.rate;
-        }
-    }
 
-    displayItinerary(itinerary, destination, days, currencySymbol, currencyCode, exchangeRateValue, travelersCount, hotels);
-    displayBudget(budget, budgetAmount, currencySymbol, currencyCode, exchangeRateValue, travelersCount);
+    displayItinerary(itinerary, destination, days, destCurrencySymbol, destCurrencyCode, 1, travelersCount, hotels);
+    displayBudget(budget, budgetAmount, destCurrencySymbol, destCurrencyCode, 1, travelersCount);
     displayRecommendations(itinerary, budget);
     displayOverview(source, destination, days, budgetAmount, style, groupLabel, interests, weatherData, timezoneData, countryInfo, travelAdvisory, exchangeRate, transport, { travelers: travelersCount, startDate });
 }
@@ -302,9 +306,8 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
     const groupNote = travelers > 1 ? `<span class="itinerary-subtitle">Costs for ${travelers} travelers</span>` : '';
     title.innerHTML = `Your ${days}-Day Itinerary in ${destination} ${groupNote}`;
 
-    const convertCurrency = (usdAmount = 0) => {
-        const converted = (usdAmount || 0) * exchangeRate;
-        return Math.round(converted);
+    const convertCurrency = (amount = 0) => {
+        return Math.round(amount || 0);
     };
 
     let html = '';
@@ -343,11 +346,17 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
 
                     <div class="day-activities-grid">
                         <div>
-                            <h4 style="margin-bottom: 10px; color: #4ECDC4;">🎯 Activities</h4>
+                            <h4 style="margin-bottom: 10px; color: var(--secondary-color);">🎯 Activities</h4>
                             ${activities.length ? activities.map(activity => {
                                 const activityCost = convertCurrency(activity.cost || activity.estimated_cost || 0);
                                 const location = activity.location ? `📍 ${activity.location}` : '';
                                 const description = activity.description || '';
+                                const transit = activity.transit_to_next ? `
+                                    <div style="margin-top: 12px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.1); font-size: 13px; color: var(--primary-color); display: flex; align-items: center; gap: 6px;">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 16 16 12 12 8"></polyline><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+                                        <em>Next:</em> ${activity.transit_to_next}
+                                    </div>
+                                ` : '';
                                 return `
                                     <div class="activity-item">
                                         <div class="activity-time">${activity.time || 'TBD'}</div>
@@ -356,6 +365,7 @@ function displayItinerary(itinerary, destination, days, currencySymbol = '$', cu
                                         <div style="margin-top: 8px;">
                                             <div class="activity-cost">💵 ${currencySymbol}${activityCost.toLocaleString()}</div>
                                             <div style="font-size: 13px; color: #666; margin-top: 4px;">${description}</div>
+                                            ${transit}
                                         </div>
                                     </div>
                                 `;
@@ -398,9 +408,8 @@ function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = 
     }
 
     // Helper function to convert and format currency
-    const convertCurrency = (usdAmount) => {
-        const converted = usdAmount * exchangeRate;
-        return Math.round(converted).toLocaleString();
+    const convertCurrency = (amount) => {
+        return Math.round(amount || 0).toLocaleString();
     };
 
     const breakdown = budget.breakdown;
@@ -443,8 +452,8 @@ function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = 
             </div>
         </div>
 
-        <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 30px; border-radius: 8px; text-align: center; margin-top: 20px;">
-            <div style="font-size: 18px; margin-bottom: 10px;">Total Budget</div>
+        <div style="background: linear-gradient(135deg, var(--primary-color), var(--primary-hover)); box-shadow: 0 10px 30px -10px rgba(99,102,241,0.4); border: 1px solid rgba(255,255,255,0.2); color: white; padding: 30px; border-radius: 16px; text-align: center; margin-top: 20px;">
+            <div style="font-size: 18px; margin-bottom: 10px; font-weight: 600;">Total Budget</div>
             <div style="font-size: 36px; font-weight: bold; margin-bottom: 10px;">${currencySymbol}${convertCurrency(budget.total_budget || totalBudget)} <span style="font-size:16px; font-weight:400;">for ${travelers} traveler${travelers > 1 ? 's' : ''}</span></div>
             <div style="font-size: 16px;">Group Daily Budget: ${currencySymbol}${convertCurrency(budget.daily_budget || 0)}</div>
             <div style="font-size: 14px; margin-top: 8px; opacity: 0.9;">Per Traveler: ${currencySymbol}${convertCurrency(perTravelerTotal)} total • ${currencySymbol}${convertCurrency(perTravelerDaily)} / day</div>
@@ -454,7 +463,7 @@ function displayBudget(budget, totalBudget, currencySymbol = '', currencyCode = 
     if (budget.savings_tips && budget.savings_tips.length > 0) {
         html += `
             <div style="margin-top: 30px;">
-                <h3 style="margin-bottom: 15px; color: #FF6B6B;">💰 Money Saving Tips</h3>
+                <h3 style="margin-bottom: 15px; color: var(--secondary-color);">💰 Money Saving Tips</h3>
                 <div class="tips-list">
                     ${budget.savings_tips.map(tip => `
                         <div class="tip-item">${tip}</div>
@@ -487,10 +496,10 @@ function displayRecommendations(itinerary, budget) {
     if (recommendations.local_warnings && recommendations.local_warnings.length > 0) {
         html += `
             <div class="tips-section">
-                <h3 style="color: #FF6B6B;">⚠️ Local Warnings</h3>
+                <h3 style="color: var(--secondary-color);">⚠️ Local Warnings</h3>
                 <div class="tips-list">
                     ${recommendations.local_warnings.map(warning => `
-                        <div class="tip-item" style="border-left-color: #FF6B6B;">${warning}</div>
+                        <div class="tip-item" style="border-left-color: var(--secondary-color);">${warning}</div>
                     `).join('')}
                 </div>
             </div>
@@ -503,10 +512,10 @@ function displayRecommendations(itinerary, budget) {
     if (recommendations.money_saving_tips && recommendations.money_saving_tips.length > 0) {
         html += `
             <div class="tips-section" style="margin-top: 30px;">
-                <h3 style="color: #4ECDC4;">💰 Money Saving Tips</h3>
+                <h3 style="color: var(--primary-color);">💰 Money Saving Tips</h3>
                 <div class="tips-list">
                     ${recommendations.money_saving_tips.map(tip => `
-                        <div class="tip-item" style="border-left-color: #4ECDC4;">✓ ${tip}</div>
+                        <div class="tip-item" style="border-left-color: var(--primary-color);">✓ ${tip}</div>
                     `).join('')}
                 </div>
             </div>
@@ -517,10 +526,10 @@ function displayRecommendations(itinerary, budget) {
     if (recommendations.hidden_gems && recommendations.hidden_gems.length > 0) {
         html += `
             <div class="tips-section" style="margin-top: 30px;">
-                <h3 style="color: #FFE66D;">🔍 Hidden Gems</h3>
+                <h3 style="color: var(--accent-color);">🔍 Hidden Gems</h3>
                 <div class="tips-list">
                     ${recommendations.hidden_gems.map(gem => `
-                        <div class="tip-item" style="border-left-color: #FFE66D;">⭐ ${gem}</div>
+                        <div class="tip-item" style="border-left-color: var(--accent-color);">⭐ ${gem}</div>
                     `).join('')}
                 </div>
             </div>
@@ -542,7 +551,7 @@ function displayOverview(source, destination, days, budget, style, group, intere
     let countrySection = '';
     if (countryInfo) {
         countrySection = `
-            <div style="margin-top: 30px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white;">
+            <div style="margin-top: 30px; padding: 25px; background: linear-gradient(135deg, var(--dark-bg), var(--primary-color)); box-shadow: var(--glass-shadow); border: 1px solid var(--glass-border); border-radius: 16px; color: white;">
                 <h3 style="margin: 0 0 15px 0; font-size: 18px;">🌍 ${countryInfo.name}</h3>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
                     <div>
@@ -586,17 +595,30 @@ function displayOverview(source, destination, days, budget, style, group, intere
         `;
     }
 
-    // Build exchange rate section
+    // Build exchange rate & dual currency section
     let currencySection = '';
     if (exchangeRate && countryInfo) {
-        const convertedBudget = (budget * exchangeRate.rate).toFixed(2);
+        
+        // Calculate the transport deduction for the display
+        let flightCost = 0;
+        if (transport && transport.quotes && transport.quotes.length > 0) {
+            flightCost = transport.quotes[0].group_price || 0;
+        }
+        
+        const remainingSource = Math.max(budget * 0.1, budget - flightCost);
+        const onGroundDest = (remainingSource * exchangeRate.rate).toFixed(2);
+        
         currencySection = `
-            <div style="margin-top: 20px; padding: 15px; background: #f0f4ff; border-left: 4px solid #667eea; border-radius: 4px;">
-                <div style="font-size: 13px; color: #666; margin-bottom: 8px;">💱 Currency Conversion</div>
-                <div style="font-size: 20px; font-weight: 600; color: #333;">
-                    $${budget} USD = ${countryInfo.currency_symbol}${convertedBudget} ${countryInfo.currency_code}
+            <div style="margin-top: 20px; padding: 15px; background: #f0f4ff; border-left: 4px solid var(--primary-color); border-radius: 4px;">
+                <div style="font-size: 13px; color: #666; margin-bottom: 8px;">💱 Dual-Currency Architecture Active</div>
+                <div style="font-size: 14px; color: #333; line-height: 1.6;">
+                    <strong>Total Budget:</strong> ${sourceCurrencyInfo.symbol}${Number(budget).toLocaleString()} ${sourceCurrencyInfo.code}<br>
+                    <strong>Transport Cost:</strong> - ${sourceCurrencyInfo.symbol}${Number(flightCost).toLocaleString()} ${sourceCurrencyInfo.code}<br>
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,0.1); font-size: 16px;">
+                        <strong>On-Ground Budget:</strong> ${countryInfo.currency_symbol}${Number(onGroundDest).toLocaleString()} ${countryInfo.currency_code}
+                    </div>
                 </div>
-                <div style="font-size: 12px; color: #999; margin-top: 8px;">Rate: 1 USD = ${exchangeRate.rate.toFixed(4)} ${countryInfo.currency_code}</div>
+                <div style="font-size: 12px; color: #999; margin-top: 12px;">Exchange Rate: 1 ${sourceCurrencyInfo.code} = ${exchangeRate.rate.toFixed(4)} ${countryInfo.currency_code}</div>
             </div>
         `;
     }
@@ -607,7 +629,7 @@ function displayOverview(source, destination, days, budget, style, group, intere
     if (forecastSource.length > 0) {
         const forecast = forecastSource.slice(0, 3); // Show first 3 days
         weatherSection = `
-            <div style="margin-top: 30px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white;">
+            <div style="margin-top: 30px; padding: 25px; background: linear-gradient(135deg, var(--dark-bg), var(--primary-color)); box-shadow: var(--glass-shadow); border: 1px solid var(--glass-border); border-radius: 16px; color: white;">
                 <h3 style="margin: 0 0 15px 0; font-size: 18px;">🌤️ Weather Forecast</h3>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
                     ${forecast.map(day => `
@@ -705,6 +727,16 @@ function renderTransportSection(transport, travelers = 1) {
         return '';
     }
 
+    let routingHtml = '';
+    if (transport.routing_strategy) {
+        routingHtml = `
+            <div class="routing-alert">
+                <strong>🛤️ Strategic Routing Advice</strong>
+                <div>${transport.routing_strategy}</div>
+            </div>
+        `;
+    }
+
     const title = transport.trip_type === 'india_train'
         ? '🚆 Train Fare Snapshot'
         : '✈️ Flight Price Snapshot';
@@ -744,11 +776,12 @@ function renderTransportSection(transport, travelers = 1) {
 
     return `
         <div class="transport-section">
-            <div class="transport-header">
-                <h3>${title}</h3>
+            <div class="transport-header" style="margin-bottom: 20px;">
+                <h3 style="margin: 0; font-size: 20px;">${title}</h3>
                 ${distanceInfo}
             </div>
-            <div class="transport-grid">
+            ${routingHtml}
+            <div class="transport-grid" style="display: grid; gap: 15px;">
                 ${quoteCards}
             </div>
         </div>
@@ -1083,9 +1116,32 @@ function renderAutocompleteDropdown(inputId, suggestions) {
                 document.getElementById('source').value = name;
                 sourceCoords = { lat, lon, country, state, name, display_name: displayName || name };
                 hideAutocompleteDropdown('source');
+                updateSourceCurrency(country || displayName || name);
             }
         });
     });
+}
+
+async function updateSourceCurrency(countryName) {
+    if (!countryName) return;
+    try {
+        const response = await fetch(`${API_URL}/country-info?country=${encodeURIComponent(countryName)}`);
+        if (response.ok) {
+            const data = await response.json();
+            if (data && data.currency_code) {
+                sourceCurrencyInfo = {
+                    code: data.currency_code,
+                    symbol: data.currency_symbol || data.currency_code
+                };
+                const budgetLabel = document.getElementById('budgetLabel');
+                if (budgetLabel) {
+                    budgetLabel.textContent = `💰 Total Budget (${sourceCurrencyInfo.code})`;
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Could not update source currency', e);
+    }
 }
 
 // UI Helpers

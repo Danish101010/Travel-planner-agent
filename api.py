@@ -3,11 +3,36 @@ Travel Planner - Flask Backend API
 Production-ready deployment configuration
 """
 
+import os
+import traceback
+import logging
+from datetime import datetime
+import time
+import copy
+from collections import defaultdict, deque
+from pathlib import Path
+import json
+
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+# Load environment variables for local development
+_env_name = os.getenv('FLASK_ENV')
+_base_dir = Path(__file__).resolve().parent
+if _env_name:
+    _env_path = _base_dir / f".env.{_env_name}"
+    if _env_path.exists():
+        load_dotenv(_env_path, override=False)
+else:
+    _dev_env = _base_dir / ".env.development"
+    if _dev_env.exists():
+        load_dotenv(_dev_env, override=False)
+
 from planner import (
     planner_agent,
     budget_agent,
+    routing_agent,
     normalize_itinerary_costs,
     normalize_budget_estimate,
     apply_meal_pois,
@@ -23,27 +48,6 @@ from travel_data import (
     get_hotels,
 )
 from transport_pricing import build_transport_pricing
-import os
-import traceback
-import logging
-from datetime import datetime
-import time
-import copy
-from collections import defaultdict, deque
-from pathlib import Path
-from dotenv import load_dotenv
-
-# Load environment variables for local development
-_env_name = os.getenv('FLASK_ENV')
-_base_dir = Path(__file__).resolve().parent
-if _env_name:
-    _env_path = _base_dir / f".env.{_env_name}"
-    if _env_path.exists():
-        load_dotenv(_env_path, override=False)
-else:
-    _dev_env = _base_dir / ".env.development"
-    if _dev_env.exists():
-        load_dotenv(_dev_env, override=False)
 
 # Configuration
 class Config:
@@ -255,22 +259,11 @@ def _quote_total_cost(quote, fallback_travelers):
 
 
 def _find_travel_day(schedule):
-    for day in schedule:
-        if not isinstance(day, dict):
-            continue
-        text_bits = [day.get('theme', ''), day.get('summary', '')]
-        for bucket in ('activities', 'meals'):
-            for entry in day.get(bucket, []) or []:
-                if isinstance(entry, dict):
-                    text_bits.append(entry.get('activity') or entry.get('restaurant') or '')
-                    text_bits.append(entry.get('description') or '')
-        blob = ' '.join(text_bits).lower()
-        if any(keyword in blob for keyword in _travel_keywords):
-            return day
+    # Always inject inbound flight/train onto Day 1 to prevent it from attaching to the departure day at the end of the trip.
     return schedule[0] if schedule else None
 
 
-def _inject_transport_costs(itinerary, budget, transport_options):
+def _inject_transport_costs(itinerary, budget, transport_options, target_currency='USD'):
     quotes = (transport_options or {}).get('quotes') or []
     if not itinerary or not isinstance(itinerary, dict) or not quotes:
         return itinerary, budget, None
@@ -289,7 +282,15 @@ def _inject_transport_costs(itinerary, budget, transport_options):
 
     native_total = _quote_total_cost(best_quote, travelers)
     usd_total = _convert_to_usd(native_total, best_quote.get('currency'))
-    if usd_total <= 0:
+    
+    # Convert to target_currency if not USD
+    if target_currency != 'USD':
+        rate_to_target = _convert_to_usd(1.0, target_currency)
+        entry_cost = _safe_int(round(usd_total / rate_to_target))
+    else:
+        entry_cost = _safe_int(round(usd_total))
+        
+    if entry_cost <= 0:
         return itinerary, budget, None
 
     target_day = _find_travel_day(schedule)
@@ -312,7 +313,6 @@ def _inject_transport_costs(itinerary, budget, transport_options):
     provider_label = best_quote.get('provider') or best_quote.get('class_label') or 'Preferred Carrier'
     confidence = (best_quote.get('confidence') or 'estimated').title()
     local_currency = (best_quote.get('currency') or 'USD').upper()
-    entry_cost = _safe_int(round(usd_total))
 
     transport_entry = {
         'time': best_quote.get('departure') or '08:00',
@@ -342,7 +342,7 @@ def _inject_transport_costs(itinerary, budget, transport_options):
         'quote_id': best_quote.get('id'),
         'mode': best_quote.get('mode'),
         'provider': provider_label,
-        'currency': local_currency,
+        'currency': target_currency,
         'native_amount': round(native_total, 2),
         'usd_amount': entry_cost,
         'travel_day': target_day.get('day'),
@@ -448,6 +448,8 @@ def generate_itinerary():
         destination = str(data.get('destination', '')).strip()
         days = int(data.get('days', 5))
         budget = float(data.get('budget', 3000))
+        source_currency = str(data.get('source_currency', 'USD')).strip().upper()
+        dest_currency = str(data.get('dest_currency', source_currency)).strip().upper()
         style = str(data.get('style', 'Mid-Range')).strip()
         interests = data.get('interests', [])
         group = str(data.get('group', 'Solo')).strip()
@@ -480,8 +482,8 @@ def generate_itinerary():
                     lat=dest_lat,
                     lon=dest_lon,
                     kinds='foods,cafes,restaurants',
-                    radius=1500,
-                    limit=20,
+                    radius=5000,
+                    limit=30,
                 ),
                 fallback=[]
             )
@@ -506,8 +508,8 @@ def generate_itinerary():
             return jsonify({'success': False, 'error': 'Destination cannot be empty'}), 400
         if days < 1 or days > 30:
             return jsonify({'success': False, 'error': 'Days must be between 1 and 30'}), 400
-        if budget < 500 or budget > 100000:
-            return jsonify({'success': False, 'error': 'Budget must be between 500 and 100000'}), 400
+        if budget < 10 or budget > 100000000:
+            return jsonify({'success': False, 'error': 'Budget must be between 10 and 100,000,000'}), 400
         if not isinstance(interests, list) or len(interests) == 0:
             return jsonify({'success': False, 'error': 'At least one interest must be selected'}), 400
         if travelers < 1:
@@ -515,43 +517,73 @@ def generate_itinerary():
         if group.lower() != 'solo' and travelers < 2:
             return jsonify({'success': False, 'error': 'Please provide the number of travelers for non-solo trips'}), 400
 
-        logger.info(
-            'Generating itinerary: %s -> %s (%s days, $%s, %s travelers)',
-            source,
-            destination,
-            days,
-            budget,
-            travelers,
-        )
+        # Dual Currency Resolution
+        rate_info = get_exchange_rate(source_currency, dest_currency)
+        exchange_rate = rate_info.get('rate', 1.0) if rate_info else 1.0
 
-        # Generate itinerary
-        itinerary_raw = planner_agent(destination, days, budget, style, interests, group, special_needs, source, travelers)
-        if not itinerary_raw:
-            raise ValueError('Planner failed to return itinerary data')
-        itinerary = normalize_itinerary_costs(copy.deepcopy(itinerary_raw), budget, days)
-        if meal_pois:
-            itinerary = apply_meal_pois(itinerary, meal_pois, itinerary_raw)
-            itinerary = normalize_itinerary_costs(itinerary, budget, days)
-        if hotel_recs:
-            itinerary = _inject_hotel_recommendations(itinerary, hotel_recs, destination)
-        
-        # Generate budget breakdown
-        budget_raw = budget_agent(destination, days, budget, style, source, travelers)
-        if not budget_raw:
-            raise ValueError('Budget agent failed to return data')
-        budget_info = normalize_budget_estimate(copy.deepcopy(budget_raw), budget, days)
-
+        # Generate Transport FIRST
         transport_options = build_transport_pricing(
             source_details=source_details,
             destination_details=destination_details,
             departure_date=start_date,
             travelers=travelers,
+            target_currency=source_currency
+        )
+        
+        # Deduct transport cost to find remaining on-ground budget
+        transport_cost_source = 0
+        if transport_options and transport_options.get('quotes'):
+            best_quote = min(transport_options['quotes'], key=lambda q: q.get('group_price', float('inf')))
+            transport_cost_source = best_quote.get('group_price', 0)
+        
+        remaining_source = max(budget * 0.1, budget - transport_cost_source)
+        on_ground_dest = remaining_source * exchange_rate
+
+        logger.info(
+            'Generating dual-currency itinerary: %s -> %s (%s days, Total: %s %s, On-ground: %s %s)',
+            source,
+            destination,
+            days,
+            budget,
+            source_currency,
+            on_ground_dest,
+            dest_currency
         )
 
+        # Generate budget breakdown FIRST (using DEST_CURRENCY)
+        budget_raw = budget_agent(destination, days, on_ground_dest, style, source, travelers, dest_currency)
+        if not budget_raw:
+            raise ValueError('Budget agent failed to return data')
+        budget_info = normalize_budget_estimate(copy.deepcopy(budget_raw), on_ground_dest, days)
+
+        # Extract budget string for planner
+        budget_str = "None"
+        if budget_info and budget_info.get('breakdown'):
+            budget_str = json.dumps(budget_info['breakdown'])
+
+        # Generate itinerary NEXT (passing budget constraints)
+        itinerary_raw = planner_agent(destination, days, on_ground_dest, style, interests, group, special_needs, source, travelers, dest_currency, budget_breakdown=budget_str)
+        if not itinerary_raw:
+            raise ValueError('Planner failed to return itinerary data')
+        itinerary = normalize_itinerary_costs(copy.deepcopy(itinerary_raw), on_ground_dest, days)
+        
+        if meal_pois:
+            itinerary = apply_meal_pois(itinerary, meal_pois, itinerary_raw)
+            itinerary = normalize_itinerary_costs(itinerary, on_ground_dest, days)
+        if hotel_recs:
+            itinerary = _inject_hotel_recommendations(itinerary, hotel_recs, destination)
+
+        # Generate routing strategy
+        routing_info = routing_agent(source, destination)
+        if routing_info and routing_info.get("strategy"):
+            transport_options['routing_strategy'] = routing_info.get("strategy")
+
+        # Inject transport costs (converting to dest_currency for the itinerary)
         itinerary, budget_info, transport_summary = _inject_transport_costs(
             itinerary,
             budget_info,
             transport_options,
+            target_currency=dest_currency
         )
         itinerary = _smooth_cost_outliers(itinerary)
         if transport_summary:
@@ -567,6 +599,9 @@ def generate_itinerary():
             'budget': budget_info,
             'budget_normalized': budget_info,
             'budget_raw': budget_raw,
+            'source_currency': source_currency,
+            'dest_currency': dest_currency,
+            'exchange_rate': exchange_rate,
             'transport': transport_options,
             'hotels': hotel_recs,
             'group': {

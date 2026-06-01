@@ -1,14 +1,12 @@
-import google.generativeai as genai
+from google import genai
 import json
 import os
 import time
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-# Keep the requested model; do not force JSON mode (unsupported on this model)
-MODEL = genai.GenerativeModel("gemma-3-4b-it")
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+MODEL_NAME = "gemini-3.1-flash-lite"
 
 
 def _parse_json_safe(text: str):
@@ -80,7 +78,8 @@ INPUT:
 - Source (departure city): {source}
 - Destination: {destination}
 - Days: {days}
-- Budget: ${budget}
+- Total Budget: {budget} {source_currency}
+- Budget Constraints: {budget_breakdown}
 - Travel Style: {style}
 - Interests: {interests}
 - Group: {group}
@@ -100,11 +99,13 @@ Create a detailed JSON itinerary with:
 RULES:
 - Output ONLY valid JSON
 - No markdown, no explanation
-- Stay within budget
+- CRITICAL: You MUST strictly adhere to the {budget_breakdown} constraints. Do not exceed the allocated budget for food or activities.
 - Include realistic activity times
 - Add backup options for rainy days
-- Consider travel time between locations
+- Consider travel time between locations.
+- CRITICAL: For EVERY activity, you MUST specify the exact transport method (e.g., '15m subway via Marunouchi Line', '10m walk') to the next location in the 'transit_to_next' field. Do not omit this field.
 - ALWAYS calculate costs for the entire group of {travelers} travelers (not per person)
+- CRITICAL: All generated costs and budgets MUST be natively estimated and returned in the {source_currency} currency. Do not use USD unless the source currency is USD.
 - CRITICAL: Use ONLY single integer values for all numeric fields (never ranges like "6-8" or "3500 - 4500")
 - CRITICAL: All numbers must be valid JSON integers (e.g., 3500, not "3500 - 4500")
 - Ensure all string values are properly closed and contain no unescaped newlines
@@ -125,7 +126,8 @@ Format:
           "cost": 0,
           "duration_minutes": 60,
           "description": "...",
-          "tip": "..."
+          "tip": "...",
+          "transit_to_next": "..."
         }}
       ],
       "meals": [
@@ -155,7 +157,7 @@ You are a travel budget expert. Create a detailed budget breakdown for this trip
 
 Destination: {destination}
 Days: {days}
-Budget: ${budget}
+Budget: {budget} {source_currency}
 Travel Style: {style}
 Source (departure city): {source}
 Travelers: {travelers}
@@ -166,6 +168,7 @@ Output ONLY valid JSON with:
 - Money saving tips specific to this destination
 - Estimated total with breakdown
 - Include per-person notes wherever relevant, but make sure totals reflect all {travelers} travelers
+- CRITICAL: All generated costs and budgets MUST be natively estimated and returned in the {source_currency} currency. Do not use USD unless the source currency is USD.
 - CRITICAL: Use ONLY single integer values (never ranges like "3500 - 4500", use exact numbers like 3800)
 
 Format:
@@ -201,7 +204,7 @@ MIN_DAY_SPAN_MINUTES = 14 * 60
 
 def planner_agent(destination: str, days: int, budget: float, style: str,
                   interests: list, group: str, special_needs: str, source: str,
-                  travelers: int = 1):
+                  travelers: int = 1, source_currency: str = "USD", budget_breakdown: str = "None"):
     """Generate comprehensive travel itinerary"""
     
     prompt = ITINERARY_PROMPT.format(
@@ -209,6 +212,8 @@ def planner_agent(destination: str, days: int, budget: float, style: str,
         destination=destination,
         days=days,
         budget=budget,
+        budget_breakdown=budget_breakdown,
+        source_currency=source_currency,
         style=style,
         interests=", ".join(interests),
         group=group,
@@ -219,26 +224,27 @@ def planner_agent(destination: str, days: int, budget: float, style: str,
     max_retries = 3
     for attempt in range(max_retries):
         try:
-          response = MODEL.generate_content(prompt)
+          response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
           text = (response.text or "").strip()
           return _parse_json_safe(text)
         except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
+            if ("429" in str(e) or "503" in str(e)) and attempt < max_retries - 1:
                 wait_time = 15 * (attempt + 1)
-                print(f"Rate limit hit. Waiting {wait_time} seconds...")
+                print(f"API busy ({e}). Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
                 raise
 
 
 def budget_agent(destination: str, days: int, budget: float, style: str, source: str,
-                 travelers: int = 1):
+                 travelers: int = 1, source_currency: str = "USD"):
     """Generate detailed budget breakdown"""
     
     prompt = BUDGET_PROMPT.format(
         destination=destination,
         days=days,
         budget=budget,
+        source_currency=source_currency,
         style=style,
         source=source,
         travelers=max(1, travelers)
@@ -247,16 +253,44 @@ def budget_agent(destination: str, days: int, budget: float, style: str, source:
     max_retries = 3
     for attempt in range(max_retries):
         try:
-          response = MODEL.generate_content(prompt)
+          response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
           text = (response.text or "").strip()
           return _parse_json_safe(text)
         except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
+            if ("429" in str(e) or "503" in str(e)) and attempt < max_retries - 1:
                 wait_time = 15 * (attempt + 1)
-                print(f"Rate limit hit. Waiting {wait_time} seconds...")
+                print(f"API busy ({e}). Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
                 raise
+
+ROUTING_PROMPT = """
+You are a logistics travel routing expert. The user is traveling from {source} to {destination}. 
+Analyze the geographic locations. Determine if direct transport (flight/train) is likely, or if multi-modal transport is required (e.g., taking a train or bus from a smaller town to the nearest major commercial airport, then catching a flight).
+
+Output a brief, generalized strategic recommendation. Do NOT recommend specific booked tickets or exact flight numbers.
+Output ONLY valid JSON in this exact format:
+{{
+  "strategy": "Your brief 1-2 sentence routing recommendation here."
+}}
+"""
+
+def routing_agent(source: str, destination: str):
+    """Generate high-level routing strategy"""
+    prompt = ROUTING_PROMPT.format(source=source, destination=destination)
+    
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            text = (response.text or "").strip()
+            return _parse_json_safe(text)
+        except Exception as e:
+            if ("429" in str(e) or "503" in str(e)) and attempt < max_retries - 1:
+                time.sleep(5)
+            else:
+                return {"strategy": ""}
+    return {"strategy": ""}
 
 def _coerce_cost(value: Any) -> int:
     try:
@@ -266,7 +300,7 @@ def _coerce_cost(value: Any) -> int:
 
 
 def normalize_itinerary_costs(itinerary: Dict[str, Any], total_budget: float, days: int) -> Dict[str, Any]:
-    """Clamp per-activity and per-day costs so they cannot explode beyond user budget."""
+    """Ensure costs are valid integers and compute day totals. No artificial scaling down."""
     if not itinerary or not isinstance(itinerary, dict):
         return itinerary
 
@@ -274,16 +308,9 @@ def normalize_itinerary_costs(itinerary: Dict[str, Any], total_budget: float, da
     if not isinstance(schedule, list) or not schedule:
         return itinerary
 
-    days = max(1, int(days or 1))
-    safe_budget = max(100.0, float(total_budget or 100.0))
-    per_day_base = safe_budget / days
-    per_day_cap = max(60.0, per_day_base * 1.2)
-    per_entry_cap = max(10.0, min(per_day_cap * 0.5, per_day_base * 0.35, 95.0))
-
     for day in schedule:
         if not isinstance(day, dict):
             continue
-        bucket_entries: List[Dict[str, Any]] = []
         day_total = 0
         for bucket_name in ('activities', 'meals'):
             bucket = day.get(bucket_name) or []
@@ -293,20 +320,8 @@ def normalize_itinerary_costs(itinerary: Dict[str, Any], total_budget: float, da
                 if not isinstance(entry, dict):
                     continue
                 cost = _coerce_cost(entry.get('cost'))
-                if cost > per_entry_cap:
-                    cost = int(per_entry_cap)
                 entry['cost'] = cost
-                bucket_entries.append(entry)
                 day_total += cost
-
-        if day_total > per_day_cap and day_total > 0:
-            ratio = per_day_cap / day_total
-            adjusted_total = 0
-            for entry in bucket_entries:
-                new_cost = int(max(0, round(entry.get('cost', 0) * ratio)))
-                entry['cost'] = new_cost
-                adjusted_total += new_cost
-            day_total = adjusted_total
 
         day['total_cost'] = int(day_total)
 
@@ -314,55 +329,31 @@ def normalize_itinerary_costs(itinerary: Dict[str, Any], total_budget: float, da
 
 
 def normalize_budget_estimate(budget_data: Dict[str, Any], total_budget: float, days: int) -> Dict[str, Any]:
-    """Ensure budget breakdown stays within the user-specified limits."""
+    """Ensure budget breakdown contains valid numbers without artificial scaling."""
     if not budget_data or not isinstance(budget_data, dict):
         return budget_data
 
-    safe_total = int(max(100, round(total_budget or 0)))
-    days = max(1, int(days or 1))
-    safe_daily = int(max(40, round(safe_total / days)))
-
-    budget_data['total_budget'] = min(safe_total, _coerce_cost(budget_data.get('total_budget')) or safe_total)
-    budget_data['daily_budget'] = min(safe_daily, _coerce_cost(budget_data.get('daily_budget')) or safe_daily)
+    budget_data['total_budget'] = _coerce_cost(budget_data.get('total_budget'))
+    budget_data['daily_budget'] = _coerce_cost(budget_data.get('daily_budget'))
 
     breakdown = budget_data.get('breakdown')
     if not isinstance(breakdown, dict):
         return budget_data
 
-    per_day_base = safe_total / days
-    category_caps = {
-        'accommodation': per_day_base * 0.55,
-        'food': per_day_base * 0.25,
-        'activities': per_day_base * 0.3,
-        'transport': per_day_base * 0.35,
-        'contingency': per_day_base * 0.15,
-    }
-
-    tracked_fields = []
-    for key, cap in category_caps.items():
-        section = breakdown.get(key)
+    for key, section in breakdown.items():
         if not isinstance(section, dict):
             continue
-        field = 'subtotal'
-        if key in ('activities', 'transport'):
-            field = 'estimated'
-        if key == 'contingency':
-            field = 'amount'
-
-        raw_value = _coerce_cost(section.get(field))
-        section[field] = int(min(raw_value, cap)) if cap else raw_value
-        tracked_fields.append((section, field, section[field]))
-
+            
+        if 'subtotal' in section:
+            section['subtotal'] = _coerce_cost(section['subtotal'])
+        if 'estimated' in section:
+            section['estimated'] = _coerce_cost(section['estimated'])
+        if 'amount' in section:
+            section['amount'] = _coerce_cost(section['amount'])
         if 'per_night' in section:
-            section['per_night'] = int(min(_coerce_cost(section['per_night']), per_day_base * 0.55))
+            section['per_night'] = _coerce_cost(section['per_night'])
         if 'per_day' in section:
-            section['per_day'] = int(min(_coerce_cost(section['per_day']), per_day_base * 0.25))
-
-    total_categories = sum(value for _, _, value in tracked_fields)
-    if total_categories > safe_total and total_categories > 0:
-        ratio = safe_total / total_categories
-        for section, field, value in tracked_fields:
-            section[field] = int(max(0, round(value * ratio)))
+            section['per_day'] = _coerce_cost(section['per_day'])
 
     return budget_data
 
@@ -533,7 +524,8 @@ def apply_meal_pois(itinerary: Dict[str, Any], meal_pois: List[Dict[str, Any]],
                 fallback_lookup[day.get('day')] = day.get('meals', [])
 
     ordered_pois = [poi for poi in meal_pois if isinstance(poi, dict)]
-    if not ordered_pois:
+    if len(ordered_pois) < 6:
+        # If Geoapify found very few restaurants, do not inject them to prevent heavy repetition across days.
         return itinerary
 
     poi_index = 0

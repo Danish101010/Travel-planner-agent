@@ -5,8 +5,9 @@ import os
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-
 import requests
+
+from travel_data import get_exchange_rate
 
 logger = logging.getLogger(__name__)
 
@@ -577,8 +578,15 @@ def _fallback_flight_quotes(distance_km: float, travelers: int, currency: str) -
         ("Business", base_business),
     ]
 
+    rate = 1.0
+    if currency != "USD":
+        exchange_info = get_exchange_rate("USD", currency)
+        if exchange_info and "rate" in exchange_info:
+            rate = exchange_info["rate"]
+
     quotes = []
-    for cabin, price in tiers:
+    for cabin, price_usd in tiers:
+        price = price_usd * rate
         quotes.append({
             "id": f"flight-{cabin.lower().replace(' ', '-')}",
             "mode": "flight",
@@ -597,7 +605,8 @@ def _fallback_flight_quotes(distance_km: float, travelers: int, currency: str) -
 def build_transport_pricing(source_details: Optional[Dict[str, Any]],
                            destination_details: Optional[Dict[str, Any]],
                            departure_date: Optional[str] = None,
-                           travelers: int = 1) -> Dict[str, Any]:
+                           travelers: int = 1,
+                           target_currency: str = "USD") -> Dict[str, Any]:
     source_details = source_details or {}
     destination_details = destination_details or {}
     travelers = max(1, int(travelers or 1))
@@ -635,10 +644,10 @@ def build_transport_pricing(source_details: Optional[Dict[str, Any]],
         logger.info("Resolved airport codes: %s -> %s", source_code, dest_code)
 
         quotes: List[Dict[str, Any]] = []
-        quotes = _travelpayouts_flight_quotes(source_code, dest_code, departure, travelers, DEFAULT_FLIGHT_CURRENCY)
+        quotes = _travelpayouts_flight_quotes(source_code, dest_code, departure, travelers, target_currency)
         if not quotes:
             logger.info("Using heuristic flight fares due to missing live quotes")
-            quotes = _fallback_flight_quotes(distance_km, travelers, DEFAULT_FLIGHT_CURRENCY)
+            quotes = _fallback_flight_quotes(distance_km, travelers, target_currency)
         trip_type = "international_flight"
 
     return {

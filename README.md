@@ -86,7 +86,7 @@ The TravelPayouts token comes from https://www.travelpayouts.com/ (free tier). I
 the `irctc1` RapidAPI collection; grab a free RapidAPI key and assign it to `IRCTC_RAPIDAPI_KEY`.
 ```
 
-Open http://127.0.0.1:5000 in your browser.
+Open http://127.0.0.1:5001 in your browser.
 
 4) Provide both Source (departure city) and Destination in the form; the planner will factor the source into itinerary context and budget/transport notes.
 
@@ -101,19 +101,19 @@ Open http://127.0.0.1:5000 in your browser.
 
 ## Health Check and Basics
 
-- Health: `GET http://127.0.0.1:5000/api/health`
-- Generate: `POST http://127.0.0.1:5000/api/generate-itinerary`
-- Styles: `GET http://127.0.0.1:5000/api/styles`
-- Interests: `GET http://127.0.0.1:5000/api/interests`
-- Groups: `GET http://127.0.0.1:5000/api/groups`
+- Health: `GET http://127.0.0.1:5001/api/health`
+- Generate: `POST http://127.0.0.1:5001/api/generate-itinerary`
+- Styles: `GET http://127.0.0.1:5001/api/styles`
+- Interests: `GET http://127.0.0.1:5001/api/interests`
+- Groups: `GET http://127.0.0.1:5001/api/groups`
 
 ## Common Issues
 
 - Missing keys: Ensure `api-keys` includes at least Tavily + Google entries (ordered lines or `KEY=VALUE`) and run `./load-api-keys.ps1` in the same terminal before `python api.py`.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
-- Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.
-- Port in use (macOS/Linux): `export PORT=5001; python api.py` then open http://127.0.0.1:5001.
+- Port in use: Stop other apps on port 5001 or run `set PORT=5002; python api.py` then open http://127.0.0.1:5002.
+- Port in use (macOS/Linux): `export PORT=5002; python api.py` then open http://127.0.0.1:5002.
 
 # Smart Travel Planner — Local Development Guide
 
@@ -157,7 +157,7 @@ source ./load-api-keys.sh
 python api.py
 ```
 
-Open http://127.0.0.1:5000 in your browser.
+Open http://127.0.0.1:5001 in your browser.
 
 ## What’s Included
 
@@ -170,19 +170,19 @@ Open http://127.0.0.1:5000 in your browser.
 
 ## Health Check and Basics
 
-- Health: `GET http://127.0.0.1:5000/api/health`
-- Generate: `POST http://127.0.0.1:5000/api/generate-itinerary`
-- Styles: `GET http://127.0.0.1:5000/api/styles`
-- Interests: `GET http://127.0.0.1:5000/api/interests`
-- Groups: `GET http://127.0.0.1:5000/api/groups`
+- Health: `GET http://127.0.0.1:5001/api/health`
+- Generate: `POST http://127.0.0.1:5001/api/generate-itinerary`
+- Styles: `GET http://127.0.0.1:5001/api/styles`
+- Interests: `GET http://127.0.0.1:5001/api/interests`
+- Groups: `GET http://127.0.0.1:5001/api/groups`
 
 ## Common Issues
 
 - Missing keys: Ensure `api-keys` includes at least Tavily + Google entries (ordered lines or `KEY=VALUE`) and run `./load-api-keys.ps1` in the same terminal before `python api.py`.
 - 401/403: Recheck keys and that your Google/Tavily accounts are active.
 - 429 (rate limit): Wait and retry; avoid rapid repeated requests.
-- Port in use: Stop other apps on port 5000 or run `set PORT=5001; python api.py` then open http://127.0.0.1:5001.
-- Port in use (macOS/Linux): `export PORT=5001; python api.py` then open http://127.0.0.1:5001.
+- Port in use: Stop other apps on port 5001 or run `set PORT=5002; python api.py` then open http://127.0.0.1:5002.
+- Port in use (macOS/Linux): `export PORT=5002; python api.py` then open http://127.0.0.1:5002.
 
 ## Notes
 

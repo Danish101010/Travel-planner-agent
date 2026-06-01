@@ -529,6 +529,11 @@ def get_pois(lat: float, lon: float, kinds=None, radius: Optional[int] = None,
         if isinstance(categories_raw, str):
             categories_raw = [c.strip() for c in categories_raw.split(',') if c.strip()]
 
+        website = properties.get('website')
+        if not website:
+            query_str = f"{name} {properties.get('city', '')}".strip()
+            website = f"https://www.google.com/maps/search/?api=1&query={quote(query_str)}"
+
         pois.append({
             'id': properties.get('place_id') or feature.get('id') or name,
             'name': name,
@@ -540,7 +545,7 @@ def get_pois(lat: float, lon: float, kinds=None, radius: Optional[int] = None,
             'address': properties.get('address_line1') or properties.get('formatted', ''),
             'description': properties.get('place_description') or properties.get('address_line2') or '',
             'image': '',
-            'url': properties.get('website') or (properties.get('datasource') or {}).get('url'),
+            'url': website,
             'source': 'geoapify'
         })
 

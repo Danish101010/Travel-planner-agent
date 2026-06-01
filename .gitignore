@@ -1,7 +1,9 @@
 # Environment and secrets
 .env
 .env.local
-.env.*.local
+.env.*
+api-keys
+load-api-keys.sh
 api-keys
 *.key
 *.pem
